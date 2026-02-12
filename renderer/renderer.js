@@ -2631,6 +2631,9 @@ const init = async () => {
     const songsDirPrompt = document.querySelector('#songsDirPrompt');
     const settingsDialog = document.querySelector('#settingsDialog');
     const settingsBtn = document.querySelector('#settingsBtn');
+    const aboutDialog = document.querySelector('#aboutDialog');
+    const aboutBtn = document.querySelector('#aboutBtn');
+    const closeAboutBtn = document.querySelector('#closeAboutBtn');
     const tabButtons = document.querySelectorAll('.tab-button');
     const closeSettingsBtn = document.querySelector('#closeSettingsBtn');
     const selectSongsDirBtn = document.querySelector('#selectSongsDirBtn');
@@ -2743,6 +2746,28 @@ const init = async () => {
             renderFromState();
         });
     });
+
+    // About Listeners
+    if (aboutBtn && aboutDialog) {
+        aboutBtn.addEventListener('click', async () => {
+            if (window.appInfo?.getVersion) {
+                const version = await window.appInfo.getVersion();
+                const versionEl = document.querySelector('#aboutVersion');
+                if (versionEl) versionEl.textContent = `v${version}`;
+            }
+            aboutDialog.showModal();
+        });
+    }
+    if (closeAboutBtn && aboutDialog) {
+        closeAboutBtn.addEventListener('click', () => closeDialogWithAnimation(aboutDialog));
+    }
+    if (aboutDialog) {
+        aboutDialog.addEventListener('click', (event) => {
+            if (event.target === aboutDialog) {
+                closeDialogWithAnimation(aboutDialog);
+            }
+        });
+    }
 
     // Settings Listeners
     if (settingsBtn && settingsDialog) {
@@ -2997,7 +3022,7 @@ const init = async () => {
         const clickedUploadToggle = uploadMenuToggle && uploadMenuToggle.contains(target);
         const clickedSettingsBtn = settingsBtn && settingsBtn.contains(target);
 
-        const isAnyDialogOpen = (settingsDialog && settingsDialog.open) || (mapperPrompt && mapperPrompt.open);
+        const isAnyDialogOpen = (settingsDialog && settingsDialog.open) || (mapperPrompt && mapperPrompt.open) || (aboutDialog && aboutDialog.open);
 
         if (isAnyDialogOpen) {
             return;
@@ -3469,6 +3494,55 @@ const init = async () => {
         if (settings.rescanMapperName && settings.songsDir) {
             await refreshLastDirectory();
         }
+    }
+
+    // Check for updates in the background
+    checkForUpdates();
+};
+
+const checkForUpdates = async () => {
+    const indicator = document.getElementById('versionIndicator');
+    if (!indicator || !window.appInfo?.checkForUpdates) return;
+
+    try {
+        const result = await window.appInfo.checkForUpdates();
+        if (result.error) {
+            indicator.textContent = '?';
+            indicator.title = 'Could not check for updates';
+            indicator.className = 'version-indicator error';
+            indicator.style.display = '';
+            return;
+        }
+
+        const current = result.currentVersion.replace(/^v/, '');
+        const latest = result.latestVersion.replace(/^v/, '');
+
+        // Compare base versions (strip pre-release suffixes like -beta for comparison)
+        const parseVer = (v) => v.replace(/-.+$/, '').split('.').map(Number);
+        const cur = parseVer(current);
+        const lat = parseVer(latest);
+        const isUpToDate = lat[0] < cur[0] || (lat[0] === cur[0] && (lat[1] < cur[1] || (lat[1] === cur[1] && lat[2] <= cur[2])));
+
+        if (isUpToDate) {
+            indicator.textContent = `v${current} ✓`;
+            indicator.title = 'You are on the latest version';
+            indicator.className = 'version-indicator up-to-date';
+        } else {
+            indicator.textContent = `v${latest} available`;
+            indicator.title = `Update available! Click to open download page (current: v${current})`;
+            indicator.className = 'version-indicator update-available';
+            indicator.onclick = () => {
+                if (result.htmlUrl && window.appInfo?.openExternalUrl) {
+                    window.appInfo.openExternalUrl(result.htmlUrl);
+                }
+            };
+        }
+        indicator.style.display = '';
+    } catch {
+        indicator.textContent = '?';
+        indicator.title = 'Could not check for updates';
+        indicator.className = 'version-indicator error';
+        indicator.style.display = '';
     }
 };
 

@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, net } = require('electron');
 const fs = require('fs/promises');
 const path = require('path');
 
@@ -45,6 +45,7 @@ function createWindow() {
 		height: 600,
 		minWidth: 850,
 		minHeight: 400,
+		icon: path.join(__dirname, 'assets', 'icons', 'mosu.ico'),
 		webPreferences: {
 			preload: path.join(__dirname, 'preload.js'),
 		},
@@ -62,6 +63,31 @@ app.whenReady().then(() => {
 			createWindow();
 		}
 	});
+});
+
+ipcMain.handle('get-app-version', () => {
+	return app.getVersion();
+});
+
+ipcMain.handle('open-external-url', async (_event, url) => {
+	if (typeof url === 'string' && (url.startsWith('https://') || url.startsWith('http://'))) {
+		await shell.openExternal(url);
+	}
+});
+
+ipcMain.handle('check-for-updates', async () => {
+	try {
+		const response = await net.fetch('https://api.github.com/repos/fax1015/mosu/releases/latest', {
+			headers: { 'User-Agent': 'mosu-app' }
+		});
+		if (!response.ok) return { error: 'Failed to fetch latest release' };
+		const data = await response.json();
+		const latestVersion = (data.tag_name || '').replace(/^v/, '');
+		const currentVersion = app.getVersion();
+		return { currentVersion, latestVersion, htmlUrl: data.html_url || '' };
+	} catch (err) {
+		return { error: err.message || 'Network error' };
+	}
 });
 
 ipcMain.handle('read-image-file', async (_event, filePath) => {

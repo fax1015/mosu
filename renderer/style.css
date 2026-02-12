@@ -592,6 +592,7 @@ h6 {
     color: var(--text-primary);
     background: var(--bg-quaternary);
     transition: var(--transition);
+    cursor: pointer;
 }
 
 .primary-button:hover {
@@ -621,6 +622,7 @@ h6 {
 }
 
 .secondary-button {
+    cursor: pointer;
     border: 2px solid var(--bg-quaternary);
     border-radius: var(--border-radius);
     padding: 0.55rem 1rem;
@@ -2051,4 +2053,95 @@ input:checked+.slider:before {
 .refresh-btn svg {
     z-index: 1;
     position: relative;
+}
+
+/* Logo Button */
+.logo-button {
+    font-family: inherit;
+    -webkit-app-region: no-drag;
+}
+
+.logo-button:hover {
+    opacity: 0.8;
+}
+
+/* Version Indicator */
+.version-indicator {
+    display: inline-flex;
+    align-items: center;
+    font-size: 0.65rem;
+    font-weight: 600;
+    padding: 2px 7px;
+    border-radius: 100px;
+    cursor: default;
+    white-space: nowrap;
+    -webkit-app-region: no-drag;
+    transition: opacity 0.2s;
+    line-height: 1.4;
+    transform: translateY(3px);
+}
+
+.version-indicator.up-to-date {
+    background: rgba(76, 175, 80, 0.15);
+    color: #4caf50;
+}
+
+.version-indicator.update-available {
+    background: rgba(255, 152, 0, 0.15);
+    color: #ff6f00;
+    cursor: pointer;
+}
+
+.version-indicator.update-available:hover {
+    background: rgba(255, 94, 0, 0.25);
+    opacity: 0.85;
+}
+
+.version-indicator.error {
+    background: rgba(158, 158, 158, 0.12);
+    color: #9e9e9e;
+}
+
+/* About Dialog */
+.about-dialog {
+    min-width: 360px;
+    max-width: 420px;
+    text-align: center;
+}
+
+.about-content {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 1rem;
+}
+
+.about-logo {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.25rem;
+}
+
+.about-version {
+    font-size: var(--font-small);
+    color: var(--text-secondary);
+    font-weight: 600;
+}
+
+.about-description {
+    font-size: var(--font-medium);
+    color: var(--text-primary);
+}
+
+.about-credits {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    margin-top: 0.5rem;
+}
+
+.about-credit-line {
+    font-size: var(--font-small);
+    color: var(--text-secondary);
 }

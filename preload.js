@@ -25,3 +25,9 @@ contextBridge.exposeInMainWorld('beatmapApi', {
 contextBridge.exposeInMainWorld('analysisChannel', {
 	sendState: (isAnalyzing) => ipcRenderer.send('analysis-state', !!isAnalyzing),
 });
+
+contextBridge.exposeInMainWorld('appInfo', {
+	getVersion: () => ipcRenderer.invoke('get-app-version'),
+	checkForUpdates: () => ipcRenderer.invoke('check-for-updates'),
+	openExternalUrl: (url) => ipcRenderer.invoke('open-external-url', url),
+});
