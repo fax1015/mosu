@@ -1,6 +1,164 @@
 const STORAGE_KEY = 'beatmapItemsV1';
 const SETTINGS_STORAGE_KEY = 'mapTrackerSettingsV1';
+const AUDIO_ANALYSIS_STATE_KEY = 'audioAnalysisStateV1';
 const STORAGE_VERSION = 1;
+
+// Custom Tooltip System
+const TooltipManager = {
+    element: null,
+    timeout: null,
+    currentTrigger: null,
+    delay: 500, // Balanced delay for feel
+    observer: null,
+
+    init() {
+        this.element = document.getElementById('mosuCustomTooltip');
+        if (!this.element) {
+            this.element = document.createElement('div');
+            this.element.id = 'mosuCustomTooltip';
+            this.element.className = 'custom-tooltip';
+            document.body.appendChild(this.element);
+        }
+
+        // MutationObserver to watch for tooltip text changes on the active trigger
+        this.observer = new MutationObserver((mutations) => {
+            for (const mutation of mutations) {
+                if (mutation.type === 'attributes' && mutation.attributeName === 'data-tooltip') {
+                    this.updateContent();
+                }
+            }
+        });
+
+        // Event delegation for all elements with data-tooltip
+        document.addEventListener('mouseover', (e) => {
+            const trigger = e.target.closest('[data-tooltip]');
+            if (trigger && trigger !== this.currentTrigger) {
+                this.startTimer(trigger);
+            } else if (!trigger && this.currentTrigger) {
+                this.hide();
+            }
+        });
+
+        document.addEventListener('mouseout', (e) => {
+            const trigger = e.target.closest('[data-tooltip]');
+            if (trigger && trigger === this.currentTrigger) {
+                const related = e.relatedTarget;
+                if (!related || !trigger.contains(related)) {
+                    this.hide();
+                }
+            }
+        });
+
+        // Hide on click or scroll
+        document.addEventListener('mousedown', () => this.hide());
+        window.addEventListener('scroll', () => this.hide(), true);
+        window.addEventListener('resize', () => this.hide());
+    },
+
+    startTimer(trigger) {
+        this.clearTimer();
+        this.currentTrigger = trigger;
+        this.timeout = setTimeout(() => {
+            this.show(trigger);
+        }, this.delay);
+    },
+
+    clearTimer() {
+        if (this.timeout) {
+            clearTimeout(this.timeout);
+            this.timeout = null;
+        }
+    },
+
+    show(trigger) {
+        this.observer.disconnect();
+        this.observer.observe(trigger, { attributes: true, attributeFilter: ['data-tooltip'] });
+
+        this.updateContent();
+        this.element.classList.add('visible');
+    },
+
+    updateContent() {
+        if (!this.currentTrigger || !this.element) return;
+        const text = this.currentTrigger.getAttribute('data-tooltip');
+        if (!text) {
+            this.hide();
+            return;
+        }
+
+        this.element.textContent = text;
+
+        // Use requestAnimationFrame to ensure the DOM has updated and we can measure the new size correctly
+        requestAnimationFrame(() => {
+            if (this.currentTrigger) this.updatePosition();
+        });
+    },
+
+    hide() {
+        this.clearTimer();
+        this.observer.disconnect();
+        this.currentTrigger = null;
+        if (this.element) {
+            this.element.classList.remove('visible');
+        }
+    },
+
+    updatePosition() {
+        if (!this.element || !this.currentTrigger) return;
+
+        const triggerRect = this.currentTrigger.getBoundingClientRect();
+
+        // Temporary reset scale to 1 to measure natural width accurately
+        const originalTransform = this.element.style.transform;
+        this.element.style.transform = 'none';
+        this.element.style.display = 'block';
+
+        const tooltipWidth = this.element.offsetWidth;
+        const tooltipHeight = this.element.offsetHeight;
+
+        this.element.style.transform = originalTransform;
+        if (!this.element.classList.contains('visible')) {
+            this.element.style.display = '';
+        }
+
+        let left = triggerRect.left + (triggerRect.width / 2) - (tooltipWidth / 2);
+        let top = triggerRect.top - tooltipHeight - 12; // Increased gap for arrow
+        let isTop = true;
+
+        // Viewport constraints
+        const padding = 16;
+        const winWidth = window.innerWidth;
+
+        if (left < padding) {
+            left = padding;
+        } else if (left + tooltipWidth > winWidth - padding) {
+            left = winWidth - tooltipWidth - padding;
+        }
+
+        // Flip to bottom if it overflows the top
+        if (top < padding) {
+            top = triggerRect.bottom + 12;
+            isTop = false;
+        }
+
+        // Position the arrow to point exactly at the trigger center
+        const arrowLeft = triggerRect.left + (triggerRect.width / 2) - left;
+        this.element.style.setProperty('--arrow-left', `${Math.round(arrowLeft)}px`);
+
+        this.element.classList.toggle('mosu-tooltip--top', isTop);
+        this.element.classList.toggle('mosu-tooltip--bottom', !isTop);
+
+        this.element.style.left = `${Math.round(left)}px`;
+        this.element.style.top = `${Math.round(top)}px`;
+    }
+};
+
+// Initialize Tooltip Manager
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', () => TooltipManager.init());
+} else {
+    TooltipManager.init();
+}
 
 let beatmapItems = [];
 let todoIds = [];
@@ -442,9 +600,12 @@ const shouldIgnoreGuestDifficulty = (content) => {
     }
 };
 
+// Cached mapper name for guest difficulty filtering (set before each render pass)
+let _cachedMapperNeedle = '';
+
 const isGuestDifficultyItem = (item) => {
     if (!settings.ignoreGuestDifficulties) return false;
-    const mapper = (getEffectiveMapperName() || '').trim().toLowerCase();
+    const mapper = _cachedMapperNeedle;
     if (!mapper) return false;
     const creator = String(item.creator || '').toLowerCase();
     if (!creator.includes(mapper)) return false;
@@ -773,6 +934,7 @@ const normalizeMetadata = (metadata) => ({
     version: metadata?.version || 'Unknown Version',
     beatmapSetID: metadata?.beatmapSetID ?? 'Unknown',
     coverUrl: metadata?.coverUrl || '',
+    coverPath: metadata?.coverPath || '',
     highlights: metadata?.highlights || [],
     progress: metadata?.progress ?? 0,
     durationMs: metadata?.durationMs ?? null,
@@ -784,6 +946,70 @@ const normalizeMetadata = (metadata) => ({
     deadline: metadata?.deadline ?? null,
     targetStarRating: metadata?.targetStarRating ?? null,
 });
+
+const coverLoadQueue = [];
+const queuedCoverPaths = new Set();
+let isProcessingCoverQueue = false;
+
+const processCoverLoadQueue = async () => {
+    if (isProcessingCoverQueue) return;
+    isProcessingCoverQueue = true;
+
+    try {
+        const CONCURRENCY = 30;
+        while (coverLoadQueue.length > 0) {
+            const batch = coverLoadQueue.splice(0, CONCURRENCY);
+
+            await Promise.all(batch.map(async ({ itemId, coverPath }) => {
+                const queueKey = `${itemId}::${coverPath}`;
+                try {
+                    const item = beatmapItems.find(i => i.id === itemId);
+                    if (!item || item.coverPath !== coverPath) {
+                        return;
+                    }
+
+                    // Use convertFileSrc for direct asset protocol URL (no IPC round-trip)
+                    let coverUrl = '';
+                    if (window.beatmapApi?.convertFileSrc) {
+                        coverUrl = window.beatmapApi.convertFileSrc(coverPath);
+                    } else if (window.beatmapApi?.readImage) {
+                        coverUrl = await window.beatmapApi.readImage(coverPath);
+                    }
+                    if (!coverUrl) {
+                        return;
+                    }
+
+                    item.coverUrl = coverUrl;
+
+                    const img = document.querySelector(`[data-item-id="${itemId}"] .list-img img`);
+                    if (img) {
+                        img.src = coverUrl;
+                        img.classList.remove('list-img--placeholder');
+                    }
+                } catch (err) {
+                    // Non-fatal: keep placeholder for failed covers.
+                } finally {
+                    queuedCoverPaths.delete(queueKey);
+                }
+            }));
+
+            // Yield briefly to keep UI responsive
+            await new Promise(resolve => setTimeout(resolve, 0));
+        }
+    } finally {
+        isProcessingCoverQueue = false;
+    }
+};
+
+const scheduleCoverLoad = (itemId, coverPath) => {
+    if (!itemId || !coverPath) return;
+    const queueKey = `${itemId}::${coverPath}`;
+    if (queuedCoverPaths.has(queueKey)) return;
+
+    queuedCoverPaths.add(queueKey);
+    coverLoadQueue.push({ itemId, coverPath });
+    processCoverLoadQueue();
+};
 
 const buildListItem = (metadata, index) => {
     const normalized = normalizeMetadata(metadata);
@@ -819,9 +1045,18 @@ const buildListItem = (metadata, index) => {
     img.decoding = 'async';
     if (normalized.coverUrl) {
         img.src = normalized.coverUrl;
+        // Fallback to placeholder if the asset URL fails (e.g., file missing)
+        img.onerror = () => {
+            img.onerror = null;
+            img.src = './assets/placeholder.png';
+            img.classList.add('list-img--placeholder');
+        };
     } else {
-        img.src = '../assets/placeholder.png';
+        img.src = './assets/placeholder.png';
         img.classList.add('list-img--placeholder');
+        if (normalized.coverPath) {
+            scheduleCoverLoad(normalized.id, normalized.coverPath);
+        }
     }
     image.appendChild(img);
 
@@ -835,10 +1070,12 @@ const buildListItem = (metadata, index) => {
     const creatorTag = document.createElement('span');
     creatorTag.classList.add('meta-tag');
     creatorTag.textContent = normalized.creator;
+    creatorTag.dataset.tooltip = 'Mapper';
 
     const versionTag = document.createElement('span');
     versionTag.classList.add('meta-tag');
     versionTag.textContent = normalized.version;
+    versionTag.dataset.tooltip = 'Difficulty Name';
 
     const beatmapLink = document.createElement('button');
     beatmapLink.type = 'button';
@@ -857,12 +1094,12 @@ const buildListItem = (metadata, index) => {
     beatmapLink.appendChild(websiteIcon);
 
     if (isUploaded) {
-        beatmapLink.title = 'Open in browser';
+        beatmapLink.dataset.tooltip = 'Open in browser';
         beatmapLink.dataset.action = 'open-web';
         beatmapLink.dataset.url = isUrl ? bID : `https://osu.ppy.sh/beatmapsets/${bID}`;
         beatmapLink.style.cursor = 'pointer';
     } else {
-        beatmapLink.title = 'Not uploaded';
+        beatmapLink.dataset.tooltip = 'Not uploaded';
         beatmapLink.classList.add('beatmap-link--disabled');
     }
 
@@ -872,7 +1109,7 @@ const buildListItem = (metadata, index) => {
     // Target star rating tag (always create, but hide if no value)
     const getStarRatingColor = (rating) => {
         const r = Math.max(0, Math.min(15, rating));
-        
+
         // Define color stops: [starRating, r, g, b]
         // Offset by 0.3 larger than original thresholds
         const colorStops = [
@@ -884,11 +1121,11 @@ const buildListItem = (metadata, index) => {
             [6.8, 101, 99, 222],    // #6563de - blue/purple
             [10.3, 0, 0, 0],        // black
         ];
-        
+
         // Find the two stops to interpolate between
         let lower = colorStops[0];
         let upper = colorStops[colorStops.length - 1];
-        
+
         for (let i = 0; i < colorStops.length - 1; i++) {
             if (r >= colorStops[i][0] && r <= colorStops[i + 1][0]) {
                 lower = colorStops[i];
@@ -896,42 +1133,42 @@ const buildListItem = (metadata, index) => {
                 break;
             }
         }
-        
+
         // Calculate interpolation factor
         const range = upper[0] - lower[0];
         const t = range === 0 ? 0 : (r - lower[0]) / range;
-        
+
         // Interpolate RGB values
         const finalR = Math.round(lower[1] + (upper[1] - lower[1]) * t);
         const finalG = Math.round(lower[2] + (upper[2] - lower[2]) * t);
         const finalB = Math.round(lower[3] + (upper[3] - lower[3]) * t);
-        
+
         return `rgb(${finalR}, ${finalG}, ${finalB})`;
     };
 
     const starTag = document.createElement('span');
     starTag.classList.add('meta-tag', 'meta-tag--star-rating');
-    
+
     const starIcon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
     starIcon.setAttribute('viewBox', '0 0 574 574');
     starIcon.classList.add('meta-tag-icon');
-    
+
     // Outer ring path
     const starPath = document.createElementNS('http://www.w3.org/2000/svg', 'path');
     starPath.setAttribute('d', 'M287,0C445.218,0 574,128.782 574,287C574,445.218 445.218,574 287,574C128.782,574 0,445.218 0,287C0,128.782 128.782,0 287,0ZM287,63C164.282,63 63,164.282 63,287C63,409.718 164.282,511 287,511C409.718,511 511,409.718 511,287C511,164.282 409.718,63 287,63Z');
     starIcon.appendChild(starPath);
-    
+
     // Inner circle
     const innerCircle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
     innerCircle.setAttribute('cx', '287');
     innerCircle.setAttribute('cy', '287');
     innerCircle.setAttribute('r', '121');
     starIcon.appendChild(innerCircle);
-    
+
     const starValue = document.createElement('span');
     starTag.appendChild(starIcon);
     starTag.appendChild(starValue);
-    
+
     // Helper to update star tag visibility and content
     const updateStarTag = (rating) => {
         if (rating !== null && rating !== undefined && !isNaN(rating)) {
@@ -944,18 +1181,19 @@ const buildListItem = (metadata, index) => {
             starTag.style.display = 'none';
         }
     };
-    
+
     // Initial state
     updateStarTag(normalized.targetStarRating);
+    starTag.dataset.tooltip = 'Target Star Rating';
     meta.appendChild(starTag);
-    
+
     // Store reference for dynamic updates
     listBox._updateStarTag = updateStarTag;
 
     const folderLink = document.createElement('button');
     folderLink.type = 'button';
     folderLink.classList.add('beatmap-link');
-    folderLink.title = 'Show in folder';
+    folderLink.dataset.tooltip = 'Show in folder';
     folderLink.dataset.action = 'show-folder';
     folderLink.dataset.path = normalized.filePath;
 
@@ -1020,7 +1258,7 @@ const buildListItem = (metadata, index) => {
     pinBtn.type = 'button';
     pinBtn.classList.add('pin-btn');
     const isPinned = todoIds.includes(normalized.id);
-    pinBtn.title = isPinned ? 'Unpin from Todo' : 'Pin to Todo';
+    pinBtn.dataset.tooltip = isPinned ? 'Unpin from Todo' : 'Pin to Todo';
     if (isPinned) pinBtn.classList.add('is-active');
 
     const pinSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -1038,7 +1276,7 @@ const buildListItem = (metadata, index) => {
 
     if (isTodoTab) {
         pinBtn.classList.add('is-todo-tab');
-        pinBtn.title = 'Remove from Todo';
+        pinBtn.dataset.tooltip = 'Remove from Todo';
     }
 
     pinBtn.dataset.action = 'toggle-pin';
@@ -1050,7 +1288,6 @@ const buildListItem = (metadata, index) => {
         doneBtn = document.createElement('button');
         doneBtn.type = 'button';
         doneBtn.classList.add('done-btn');
-        doneBtn.title = isDone ? 'Unmark as Done' : 'Mark as Done';
         if (isDone) {
             doneBtn.classList.add('is-active');
             listBox.classList.add('is-done');
@@ -1090,12 +1327,6 @@ const buildListItem = (metadata, index) => {
     const itemStats = document.createElement('div');
     itemStats.classList.add('item-stats');
 
-    // Calculate duration
-    const duration = normalized.durationMs || 0;
-    const min = Math.floor(duration / 1000 / 60);
-    const sec = Math.floor(duration / 1000) % 60;
-    const timeStr = `${min}:${sec.toString().padStart(2, '0')}`;
-
     // Calculate progress
     const displayProgress = isDone ? 1 : normalized.progress;
     const progress = Math.round((displayProgress || 0) * 100);
@@ -1103,19 +1334,27 @@ const buildListItem = (metadata, index) => {
     // ALL TAB: Only duration and progress, right-aligned
     if (isAllTab) {
         const durationSpan = document.createElement('span');
-        durationSpan.innerHTML = `<strong>Duration:</strong> ${timeStr}`;
+        durationSpan.classList.add('duration-stat');
+        durationSpan.innerHTML = `<strong>Duration:</strong> ${formatDuration(normalized.durationMs)}`;
         itemStats.appendChild(durationSpan);
 
         const progressSpan = document.createElement('span');
+        progressSpan.classList.add('progress-stat');
         progressSpan.innerHTML = `<strong>Progress:</strong> ${progress}%`;
         itemStats.appendChild(progressSpan);
 
         infoHeader.appendChild(itemStats);
         expansionArea.appendChild(infoHeader);
     }
-    // COMPLETED TAB: Only progress and "mark as not done" button
+    // COMPLETED TAB: Full info - duration, progress, mark as not done button
     else if (isCompletedTab) {
+        const durationSpan = document.createElement('span');
+        durationSpan.classList.add('duration-stat');
+        durationSpan.innerHTML = `<strong>Duration:</strong> ${formatDuration(normalized.durationMs)}`;
+        itemStats.appendChild(durationSpan);
+
         const progressSpan = document.createElement('span');
+        progressSpan.classList.add('progress-stat');
         progressSpan.innerHTML = `<strong>Progress:</strong> ${progress}%`;
         itemStats.appendChild(progressSpan);
 
@@ -1130,10 +1369,12 @@ const buildListItem = (metadata, index) => {
     // TODO TAB: Full info - duration, progress, mark as done, deadline, extra actions
     else if (isTodoTab) {
         const durationSpan = document.createElement('span');
-        durationSpan.innerHTML = `<strong>Duration:</strong> ${timeStr}`;
+        durationSpan.classList.add('duration-stat');
+        durationSpan.innerHTML = `<strong>Duration:</strong> ${formatDuration(normalized.durationMs)}`;
         itemStats.appendChild(durationSpan);
 
         const progressSpan = document.createElement('span');
+        progressSpan.classList.add('progress-stat');
         progressSpan.innerHTML = `<strong>Progress:</strong> ${progress}%`;
         itemStats.appendChild(progressSpan);
 
@@ -1284,7 +1525,7 @@ const buildListItem = (metadata, index) => {
             const openWebBtn = document.createElement('button');
             openWebBtn.type = 'button';
             openWebBtn.classList.add('extra-action-btn');
-            openWebBtn.title = 'Open Website';
+            openWebBtn.dataset.tooltip = 'Open Website';
             openWebBtn.innerHTML = `
                 <svg viewBox="0 0 512 512"><path d="M320 0c-17.7 0-32 14.3-32 32s14.3 32 32 32l82.7 0-201.4 201.4c-12.5 12.5-12.5 32.8 0 45.3s32.8 12.5 45.3 0L448 109.3 448 192c0 17.7 14.3 32 32 32s32-14.3 32-32l0-160c0-17.7-14.3-32-32-32L320 0zM80 96C35.8 96 0 131.8 0 176L0 432c0 44.2 35.8 80 80 80l256 0c44.2 0 80-35.8 80-80l0-80c0-17.7-14.3-32-32-32s-32 14.3-32 32l0 80c0 8.8-7.2 16-16 16L80 448c-8.8 0-16-7.2-16-16l0-256c0-8.8 7.2-16 16-16l80 0c17.7 0 32-14.3 32-32s-14.3-32-32-32L80 96z"/></svg>
                 <span>Open Website</span>
@@ -1549,9 +1790,9 @@ const updateListItemElement = (itemId) => {
     if (pinBtn) {
         pinBtn.classList.toggle('is-active', isPinned);
         if (viewMode === 'todo') {
-            pinBtn.title = 'Remove from Todo';
+            pinBtn.dataset.tooltip = 'Remove from Todo';
         } else {
-            pinBtn.title = isPinned ? 'Unpin from Todo' : 'Pin to Todo';
+            pinBtn.dataset.tooltip = isPinned ? 'Unpin from Todo' : 'Pin to Todo';
         }
     }
 
@@ -1559,7 +1800,6 @@ const updateListItemElement = (itemId) => {
     const doneBtn = el.querySelector('.done-btn');
     if (doneBtn) {
         doneBtn.classList.toggle('is-active', isDone);
-        doneBtn.title = isDone ? 'Unmark as Done' : 'Mark as Done';
         const label = doneBtn.querySelector('span');
         if (label) {
             label.textContent = isDone ? 'Mark as Not Done' : 'Mark as Done';
@@ -1766,19 +2006,32 @@ const renderFromState = () => {
         return;
     }
 
+    // Cache mapper name once per render pass for guest difficulty filtering
+    _cachedMapperNeedle = (getEffectiveMapperName() || '').trim().toLowerCase();
+
+    // Build a lookup map for O(1) access instead of O(n) Array.find per item
+    const itemMap = new Map();
+    for (const item of beatmapItems) {
+        itemMap.set(item.id, item);
+    }
+
     itemsToRender = [];
     if (viewMode === 'todo') {
         // In TODO mode, we only show items in todoIds (in that specific order) and exclude hidden guest difficulties
-        itemsToRender = todoIds
-            .map(id => beatmapItems.find(item => item.id === id))
-            .filter(Boolean)
-            .filter(item => !isGuestDifficultyItem(item));
+        for (const id of todoIds) {
+            const item = itemMap.get(id);
+            if (item && !isGuestDifficultyItem(item)) {
+                itemsToRender.push(item);
+            }
+        }
     } else if (viewMode === 'completed') {
         // In Completed mode, show items that have been marked done in the order of doneIds, excluding hidden
-        itemsToRender = doneIds
-            .map(id => beatmapItems.find(item => item.id === id))
-            .filter(Boolean)
-            .filter(item => !isGuestDifficultyItem(item));
+        for (const id of doneIds) {
+            const item = itemMap.get(id);
+            if (item && !isGuestDifficultyItem(item)) {
+                itemsToRender.push(item);
+            }
+        }
     } else {
         const visibleItems = beatmapItems.filter(item => !isGuestDifficultyItem(item));
         const filtered = filterItems(visibleItems, searchQuery);
@@ -1941,7 +2194,7 @@ const performEmbedSync = async () => {
 
     try {
         const result = await window.embedSyncApi.sync(syncUrl, settings.embedApiKey, payload);
-        
+
         console.log('Sync result:', result);
 
         if (result.success && result.data?.success) {
@@ -1978,7 +2231,7 @@ const scheduleEmbedSync = () => {
 const updateEmbedSyncStatus = (status, error = null) => {
     const statusEl = document.querySelector('#embedSyncStatus');
     const lastSyncEl = document.querySelector('#embedLastSynced');
-    
+
     if (statusEl) {
         statusEl.classList.remove('syncing', 'synced', 'error');
         if (status === 'syncing') {
@@ -2027,148 +2280,295 @@ let audioAnalysisQueue = [];
 let isAnalyzingAudio = false;
 let audioAnalysisTotal = 0;
 
+const persistAudioAnalysisState = () => {
+    try {
+        if (!audioAnalysisQueue.length) {
+            localStorage.removeItem(AUDIO_ANALYSIS_STATE_KEY);
+            return;
+        }
+        localStorage.setItem(AUDIO_ANALYSIS_STATE_KEY, JSON.stringify({
+            queue: audioAnalysisQueue,
+            total: audioAnalysisTotal,
+        }));
+    } catch (e) {
+        // Non-fatal persistence failure.
+    }
+};
+
+const restoreAudioAnalysisStateFromStorage = () => {
+    try {
+        const raw = localStorage.getItem(AUDIO_ANALYSIS_STATE_KEY);
+        if (!raw) return;
+        const state = JSON.parse(raw);
+        if (!state || !Array.isArray(state.queue)) return;
+
+        const previousQueueLen = state.queue.length;
+        const previousTotal = Number(state.total) || 0;
+        const previousCompleted = Math.max(0, previousTotal - previousQueueLen);
+
+        const validQueue = [];
+        const seen = new Set();
+        for (const id of state.queue) {
+            if (!id || seen.has(id)) continue;
+            const item = beatmapItems.find(i => i.id === id);
+            if (item && item.audio && item.filePath && typeof item.durationMs !== 'number') {
+                validQueue.push(id);
+                seen.add(id);
+            }
+        }
+
+        if (!validQueue.length) {
+            localStorage.removeItem(AUDIO_ANALYSIS_STATE_KEY);
+            return;
+        }
+
+        audioAnalysisQueue = validQueue;
+        audioAnalysisTotal = previousCompleted + validQueue.length;
+        updateRefreshProgress(previousCompleted, audioAnalysisTotal);
+    } catch (e) {
+        // Ignore malformed state.
+    }
+};
+
+const queueMissingAudioAnalysisFromItems = (items) => {
+    if (!Array.isArray(items)) return;
+    for (const item of items) {
+        if (item && item.audio && typeof item.durationMs !== 'number' && item.id) {
+            scheduleAudioAnalysis(item.id);
+        }
+    }
+};
+
+let _lastTooltipUpdate = 0;
+
 const updateRefreshProgress = (completed, total) => {
     const refreshBtn = document.querySelector('#refreshBtn');
     if (!refreshBtn) return;
 
     if (total <= 0) {
         refreshBtn.style.setProperty('--refresh-progress', '0%');
+        refreshBtn.dataset.tooltip = 'Refresh last directory';
+        _lastTooltipUpdate = 0;
         return;
     }
 
     const progress = Math.min(100, Math.max(0, (completed / total) * 100));
     refreshBtn.style.setProperty('--refresh-progress', `${progress}%`);
-};
 
-// Return the set of items considered for audio analysis depending on current view mode.
-const getAudioAnalysisScope = () => {
-    if (viewMode === 'todo') {
-        return todoIds.map(id => beatmapItems.find(i => i.id === id)).filter(Boolean);
+    // Throttle tooltip text updates to every 2s — native tooltips flash when title changes
+    const now = Date.now();
+    if (now - _lastTooltipUpdate > 2000 || completed === total) {
+        _lastTooltipUpdate = now;
+        refreshBtn.dataset.tooltip = `Analyzing audio durations... ${Math.round(progress)}% (${completed}/${total})`;
     }
-    if (viewMode === 'completed') {
-        return doneIds.map(id => beatmapItems.find(i => i.id === id)).filter(Boolean);
-    }
-    return beatmapItems.filter(item => !isGuestDifficultyItem(item));
 };
 
 const scheduleAudioAnalysis = (itemId) => {
     if (!audioAnalysisQueue.includes(itemId)) {
         audioAnalysisQueue.push(itemId);
-        // If analysis is already running, recompute total from current scope to keep progress accurate
-        if (isAnalyzingAudio) {
-            try {
-                const scope = getAudioAnalysisScope();
-                audioAnalysisTotal = scope.filter(i => i && i.audio).length;
-            } catch (e) {
-                // fallback to beatmapItems
-                audioAnalysisTotal = beatmapItems.filter(i => i && i.audio).length;
-            }
+        if (isAnalyzingAudio || audioAnalysisTotal > 0) {
+            audioAnalysisTotal += 1;
         }
+        persistAudioAnalysisState();
     }
 };
 
 const processAudioQueue = async () => {
-    // If nothing queued yet, build the queue from the current view scope
-    if (!isAnalyzingAudio) {
-        const scope = getAudioAnalysisScope();
-        const audioItems = scope.filter(i => i && i.audio);
-        const pending = audioItems.filter(i => typeof i.durationMs !== 'number').map(i => i.id);
-        audioAnalysisQueue = Array.from(new Set(pending));
-        audioAnalysisTotal = audioItems.length;
-    }
-
     if (isAnalyzingAudio || audioAnalysisQueue.length === 0) return;
     isAnalyzingAudio = true;
+    audioAnalysisTotal = Math.max(audioAnalysisTotal, audioAnalysisQueue.length);
 
     const refreshBtn = document.querySelector('#refreshBtn');
     if (refreshBtn) {
         refreshBtn.classList.add('is-analyzing');
-        refreshBtn.title = 'Analyzing audio durations...';
+        refreshBtn.dataset.tooltip = 'Analyzing audio durations...';
     }
 
+    let unsavedCount = 0;
+    const pendingUIUpdates = new Set();
+    let uiUpdateRAF = null;
+
+    // Batch UI updates into a single animation frame
+    const flushUIUpdates = () => {
+        if (pendingUIUpdates.size === 0) return;
+        const ids = [...pendingUIUpdates];
+        pendingUIUpdates.clear();
+        for (const id of ids) {
+            const el = document.querySelector(`[data-item-id="${id}"]`);
+            if (el) {
+                updateListItemElement(id);
+            }
+        }
+    };
+
+    const scheduleUIUpdate = (itemId) => {
+        pendingUIUpdates.add(itemId);
+        if (!uiUpdateRAF) {
+            uiUpdateRAF = requestAnimationFrame(() => {
+                uiUpdateRAF = null;
+                flushUIUpdates();
+            });
+        }
+    };
+
+    // Debounce persist calls to avoid excessive localStorage writes
+    let persistTimer = null;
+    const debouncedPersist = () => {
+        if (persistTimer) return;
+        persistTimer = setTimeout(() => {
+            persistTimer = null;
+            persistAudioAnalysisState();
+        }, 500);
+    };
+
+    // Analyze a single item — returns true if duration was found
+    const analyzeOne = async (itemId) => {
+        const item = beatmapItems.find(i => i.id === itemId);
+        if (!item || typeof item.durationMs === 'number' || !item.audio || !item.filePath) {
+            return false;
+        }
+
+        try {
+            const folderPath = getDirectoryPath(item.filePath);
+            const audioPath = `${folderPath}${item.audio}`;
+            const duration = await getAudioDurationMs(audioPath);
+
+            if (duration) {
+                item.durationMs = duration;
+
+                // Recalculate accurately now that we have the real duration.
+                // If raw timestamps are missing (e.g. item restored from cache without duration),
+                // we attempt one-time re-parsing of the .osu file to get them.
+                if (!item.rawTimestamps && item.filePath && window.beatmapApi?.readOsuFile) {
+                    try {
+                        const content = await window.beatmapApi.readOsuFile(item.filePath);
+                        if (content) {
+                            const { hitStarts, hitEnds } = parseHitObjects(content);
+                            const breakPeriods = parseBreakPeriods(content);
+                            const bookmarks = parseBookmarks(content);
+                            item.rawTimestamps = { hitStarts, hitEnds, breakPeriods, bookmarks };
+                        }
+                    } catch (err) {
+                        // Non-fatal re-parse failure
+                    }
+                }
+
+                if (item.rawTimestamps) {
+                    const { hitStarts, hitEnds, breakPeriods, bookmarks } = item.rawTimestamps;
+                    const objectRanges = buildHighlightRanges(hitStarts || [], hitEnds || [], duration);
+                    const breakRanges = buildBreakRanges(breakPeriods || [], duration);
+                    const bookmarkRanges = buildBookmarkRanges(bookmarks || [], duration);
+
+                    item.highlights = [...breakRanges, ...objectRanges, ...bookmarkRanges];
+                    item.progress = computeProgress(item.highlights);
+
+                    // Clean up temporary data
+                    delete item.rawTimestamps;
+                }
+
+                scheduleUIUpdate(item.id);
+                return true;
+            }
+        } catch (err) {
+            // Non-fatal
+        }
+        return false;
+    };
+
+    // Process queue with concurrent workers
+    const CONCURRENCY = 8;
+
     while (audioAnalysisQueue.length > 0) {
+        // Take a batch from the queue
+        const batch = audioAnalysisQueue.splice(0, CONCURRENCY);
+        debouncedPersist();
+
+        const results = await Promise.all(batch.map(id => analyzeOne(id)));
+
+        for (const found of results) {
+            if (found) unsavedCount++;
+        }
+
         const completed = audioAnalysisTotal - audioAnalysisQueue.length;
         updateRefreshProgress(completed, audioAnalysisTotal);
 
-        const itemId = audioAnalysisQueue[0];
-        const item = beatmapItems.find(i => i.id === itemId);
-
-        if (!item) break;
-
-        audioAnalysisQueue.shift();
-
-        if (item && typeof item.durationMs !== 'number' && item.audio && item.filePath) {
-            try {
-                const folderPath = getDirectoryPath(item.filePath);
-                const audioPath = `${folderPath}${item.audio}`;
-                // Analyze one by one in the background
-                const duration = await getAudioDurationMs(audioPath);
-
-                if (duration) {
-                    item.durationMs = duration;
-                    // Re-calculate highlights with the correct duration
-                    const file = await window.beatmapApi.readOsuFile(item.filePath);
-                    if (file?.content) {
-                        const { hitStarts, hitEnds } = parseHitObjects(file.content);
-                        const breakPeriods = parseBreakPeriods(file.content);
-                        const bookmarks = parseBookmarks(file.content);
-
-                        const objectRanges = buildHighlightRanges(hitStarts || [], hitEnds || [], duration);
-                        const breakRanges = buildBreakRanges(breakPeriods || [], duration);
-                        const bookmarkRanges = buildBookmarkRanges(bookmarks || [], duration);
-                        item.highlights = [...breakRanges, ...objectRanges, ...bookmarkRanges];
-                        item.progress = computeProgress(item.highlights);
-                    }
-
-                    updateListItemElement(item.id);
-                    scheduleSave();
-                }
-            } catch (err) {
-                console.error('Background audio analysis failed:', err);
-            }
-            // Yield for a bit to not peg the UI
-            await new Promise(r => setTimeout(r, 100));
+        // Save periodically
+        if (unsavedCount >= 25) {
+            saveToStorage();
+            unsavedCount = 0;
         }
+
+        // Brief yield to keep UI responsive (one frame)
+        await new Promise(r => setTimeout(r, 16));
+    }
+
+    // Cleanup
+    if (persistTimer) {
+        clearTimeout(persistTimer);
+        persistTimer = null;
+    }
+    persistAudioAnalysisState();
+
+    if (uiUpdateRAF) {
+        cancelAnimationFrame(uiUpdateRAF);
+        uiUpdateRAF = null;
+    }
+    flushUIUpdates();
+
+    if (unsavedCount > 0) {
+        saveToStorage();
     }
 
     isAnalyzingAudio = false;
     audioAnalysisTotal = 0;
-    updateRefreshProgress(0, 0); // Reset icon
+    updateRefreshProgress(0, 0);
     if (refreshBtn) {
         refreshBtn.classList.remove('is-analyzing');
-        refreshBtn.title = 'Refresh last directory';
+        refreshBtn.dataset.tooltip = 'Refresh last directory';
     }
+    localStorage.removeItem(AUDIO_ANALYSIS_STATE_KEY);
 };
 
-const processWorkerResult = async (file, existing) => {
+const arrayMax = (arr) => {
+    if (!arr || arr.length === 0) return 0;
+    let max = arr[0];
+    for (let i = 1; i < arr.length; i++) {
+        if (arr[i] > max) max = arr[i];
+    }
+    return max;
+};
+
+const processWorkerResult = (file, existing) => {
     const { metadata, hitStarts, hitEnds, breakPeriods, bookmarks, filePath, stat } = file;
     let coverUrl = '';
     let coverPath = '';
     let highlights = [];
 
-    if (metadata.background && window.beatmapApi?.readImage) {
+    if (metadata.background) {
         const folderPath = getDirectoryPath(filePath || '');
         coverPath = `${folderPath}${metadata.background}`;
-        try {
-            coverUrl = await window.beatmapApi.readImage(coverPath);
-        } catch (err) {
-            console.warn(`Failed to read background image: ${coverPath}`, err);
-            coverUrl = ''; // Fallback to placeholder
+        if (existing?.coverPath === coverPath && existing?.coverUrl) {
+            coverUrl = existing.coverUrl;
+        } else if (window.beatmapApi?.convertFileSrc) {
+            // Generate asset URL instantly — no IPC needed
+            coverUrl = window.beatmapApi.convertFileSrc(coverPath);
         }
     }
 
-    const maxObjectTime = hitEnds?.length ? Math.max(...hitEnds) : 0;
-    const maxBreakTime = breakPeriods?.length ? Math.max(...breakPeriods.map(r => r.end)) : 0;
-    const maxBookmarkTime = bookmarks?.length ? Math.max(...bookmarks) : 0;
+    const maxObjectTime = arrayMax(hitEnds);
+    let maxBreakTime = 0;
+    if (breakPeriods?.length) {
+        for (let i = 0; i < breakPeriods.length; i++) {
+            if (breakPeriods[i].end > maxBreakTime) maxBreakTime = breakPeriods[i].end;
+        }
+    }
+    const maxBookmarkTime = arrayMax(bookmarks);
 
-    const fallbackDuration = Math.max(maxObjectTime, maxBreakTime, maxBookmarkTime)
-        ? Math.max(maxObjectTime, maxBreakTime, maxBookmarkTime) + 1000
-        : 0;
+    const maxTime = Math.max(maxObjectTime, maxBreakTime, maxBookmarkTime);
+    const fallbackDuration = maxTime > 0 ? maxTime + 1000 : 0;
 
     let durationMs = (existing && existing.audio === metadata.audio) ? existing.durationMs : null;
 
-    // During big imports, we SKIP calling getAudioDurationMs synchronously.
-    // It will be handled by the background queue to keep the UI responsive.
     const totalDuration = durationMs || fallbackDuration;
     if (totalDuration) {
         const objectRanges = buildHighlightRanges(hitStarts || [], hitEnds || [], totalDuration);
@@ -2193,28 +2593,27 @@ const processWorkerResult = async (file, existing) => {
     };
 
     if (!durationMs && metadata.audio && filePath) {
+        // Store raw hit object/break timestamps temporarily so we can recalculate 
+        // accurate normalized highlights once the real audio duration is known.
+        item.rawTimestamps = { hitStarts, hitEnds, breakPeriods, bookmarks };
         scheduleAudioAnalysis(item.id);
     }
 
     return item;
 };
 
-const buildItemFromCache = async (cached, stat) => {
+const buildItemFromCache = (cached) => {
+    // Generate cover URL instantly from path using the asset protocol.
+    // This avoids the old base64 IPC round-trip for every single cover on startup.
     let coverUrl = '';
-    if (cached.coverPath && window.beatmapApi?.readImage) {
-        try {
-            coverUrl = await window.beatmapApi.readImage(cached.coverPath);
-        } catch (err) {
-            console.warn(`Failed to read cached background image: ${cached.coverPath}`, err);
-            coverUrl = '';
-        }
+    if (cached.coverPath && window.beatmapApi?.convertFileSrc) {
+        coverUrl = window.beatmapApi.convertFileSrc(cached.coverPath);
     }
-
     return {
         ...cached,
         coverUrl,
         highlights: cached.highlights ? deserializeHighlights(cached.highlights) : [],
-        dateModified: stat?.mtimeMs ?? cached.dateModified ?? 0,
+        dateModified: cached.dateModified ?? 0,
         id: cached.id ?? createItemId(cached.filePath),
     };
 };
@@ -2237,76 +2636,24 @@ const loadFromStorage = async () => {
     doneIds = stored.doneIds || [];
     updateTabCounts();
 
-    setLoading(true);
-    try {
-        const items = [];
-        const total = stored.items.length;
-        let processed = 0;
-        updateProgress(0, total);
-
-        let lastYield = performance.now();
-        const CONCURRENCY = 12; // Higher concurrency for startup stats/images
-        const taskQueue = [...stored.items];
-
-        const processNext = async () => {
-            while (taskQueue.length > 0) {
-                const cached = taskQueue.shift();
-
-                if (!cached?.filePath) {
-                    processed += 1;
-                    updateProgress(processed, total);
-                    continue;
-                }
-
-                let stat = null;
-                if (window.beatmapApi?.statFile) {
-                    try {
-                        stat = await window.beatmapApi.statFile(cached.filePath);
-                    } catch (error) {
-                        stat = null;
-                    }
-                }
-
-                if (stat && cached.dateModified === stat.mtimeMs && cached.highlights) {
-                    const item = await buildItemFromCache(cached, stat);
-                    items.push(item);
-                } else if (window.beatmapApi?.readOsuFile) {
-                    try {
-                        const file = await window.beatmapApi.readOsuFile(cached.filePath);
-                        if (file?.content) {
-                            const item = await buildItemFromContent(
-                                cached.filePath,
-                                file.content,
-                                file.stat,
-                                cached,
-                            );
-                            items.push(item);
-                        }
-                    } catch (error) {
-                        // Skip
-                    }
-                }
-
-                processed += 1;
-                updateProgress(processed, total);
-
-                if (performance.now() - lastYield > 16) {
-                    await new Promise(resolve => setTimeout(resolve, 0));
-                    lastYield = performance.now();
-                }
-            }
-        };
-
-        const workers = Array.from({ length: Math.min(CONCURRENCY, taskQueue.length) }, () => processNext());
-        await Promise.all(workers);
-
-        beatmapItems = items;
-        updateTabCounts();
-        renderFromState();
-        processAudioQueue();
-    } finally {
-        setLoading(false);
+    // Instant restore: trust the cache, no IPC calls per item.
+    // Cover images are deferred to the lazy load queue.
+    const items = [];
+    for (const cached of stored.items) {
+        if (!cached?.filePath) continue;
+        items.push(buildItemFromCache(cached));
     }
+
+    beatmapItems = items;
+    updateTabCounts();
+    renderFromState();
+
+    // Resume interrupted audio analysis first, then queue any newly-missing durations.
+    restoreAudioAnalysisStateFromStorage();
+
+    // Queue audio analysis for items missing duration (in background)
+    queueMissingAudioAnalysisFromItems(beatmapItems);
+    processAudioQueue();
 };
 
 const updateSortUI = () => {
@@ -2330,39 +2677,19 @@ const updateSortUI = () => {
     });
 };
 
-let audioContext = null;
+
 
 const getAudioDurationMs = async (filePath) => {
-    if (!filePath || !window.beatmapApi?.readBinary) {
+    if (!filePath || !window.beatmapApi?.getAudioDuration) {
         return null;
     }
 
     try {
-        const binary = await window.beatmapApi.readBinary(filePath);
-        if (!binary) {
-            return null;
-        }
-
-        const arrayBuffer = binary instanceof ArrayBuffer
-            ? binary
-            : binary.buffer?.slice(binary.byteOffset, binary.byteOffset + binary.byteLength);
-
-        if (!arrayBuffer) {
-            return null;
-        }
-
-        if (!audioContext) {
-            const AudioContextClass = window.AudioContext || window.webkitAudioContext;
-            audioContext = AudioContextClass ? new AudioContextClass() : null;
-        }
-
-        if (!audioContext) {
-            return null;
-        }
-
-        const audioBuffer = await audioContext.decodeAudioData(arrayBuffer.slice(0));
-        return audioBuffer.duration * 1000;
+        // Use efficient Rust-side duration extraction (no full decode/PCM spike)
+        const duration = await window.beatmapApi.getAudioDuration(filePath);
+        return duration || null;
     } catch (error) {
+        console.error('Audio analysis failed:', error);
         return null;
     }
 };
@@ -2393,54 +2720,76 @@ const AudioController = {
         const item = beatmapItems.find(i => i.id === itemId);
         if (!item || !item.audio || !item.filePath) return;
 
-        // 1. Analyze duration if missing before playing
-        if (typeof item.durationMs !== 'number') {
-            try {
-                const folderPath = getDirectoryPath(item.filePath);
-                const audioPath = `${folderPath}${item.audio}`;
-                const duration = await getAudioDurationMs(audioPath);
-                if (duration) {
-                    item.durationMs = duration;
-                    updateListItemElement(item.id);
-                    scheduleSave();
-                }
-            } catch (err) {
-                console.warn('Immediate audio analysis failed:', err);
-            }
-        }
+        const folderPath = getDirectoryPath(item.filePath);
+        const audioPath = `${folderPath}${item.audio}`;
 
+        // Load audio source if switching items — use asset protocol for instant load
         if (this.currentId !== itemId) {
-            this.currentId = itemId;
-            const folderPath = getDirectoryPath(item.filePath);
-            const audioPath = `${folderPath}${item.audio}`;
-
-            try {
-                const binary = await window.beatmapApi.readBinary(audioPath);
-                if (!binary) return;
-
-                if (this.audio.src) {
-                    URL.revokeObjectURL(this.audio.src);
+            // Clear playhead on the previous item's timeline
+            if (this.currentId) {
+                const prevEl = document.querySelector(`[data-item-id="${this.currentId}"]`);
+                if (prevEl) {
+                    const prevIdx = Number(prevEl.dataset.renderIndex);
+                    applyTimelineToBox(prevEl, prevIdx);
                 }
+            }
+            this.currentId = itemId;
 
-                const blob = new Blob([binary], { type: 'audio/mpeg' });
-                this.audio.src = URL.createObjectURL(blob);
-            } catch (err) {
-                console.error('Failed to load audio binary:', err);
-                return;
+            // Revoke old blob URL if it was one
+            if (this.audio.src && this.audio.src.startsWith('blob:')) {
+                URL.revokeObjectURL(this.audio.src);
+            }
+
+            // Use convertFileSrc for direct loading (no IPC round-trip)
+            if (window.beatmapApi?.convertFileSrc) {
+                this.audio.src = window.beatmapApi.convertFileSrc(audioPath);
+            } else {
+                // Fallback: read binary through IPC
+                try {
+                    const binary = await window.beatmapApi.readBinary(audioPath);
+                    if (!binary) return;
+
+                    const blob = new Blob([binary], { type: 'audio/mpeg' });
+                    this.audio.src = URL.createObjectURL(blob);
+                } catch (err) {
+                    console.error('Failed to load audio binary:', err);
+                    return;
+                }
             }
         }
 
-        // Determine seek time
-        if (percentage !== null) {
-            if (item.durationMs) {
-                this.audio.currentTime = percentage * (item.durationMs / 1000);
-            }
+        // Seek immediately if we have duration info
+        if (percentage !== null && item.durationMs) {
+            this.audio.currentTime = percentage * (item.durationMs / 1000);
         } else if (this.audio.currentTime === 0 && item.previewTime > 0) {
-            // Default to preview time if starting fresh and no percentage provided
             this.audio.currentTime = item.previewTime / 1000;
         }
 
+        // Start playback immediately — don't wait for duration analysis
         this.audio.play().catch(e => console.warn('Audio play failed:', e));
+
+        // Fire-and-forget: analyze duration in background if missing
+        if (typeof item.durationMs !== 'number') {
+            this._analyzeDurationInBackground(item, audioPath, percentage);
+        }
+    },
+
+    async _analyzeDurationInBackground(item, audioPath, seekPercentage) {
+        try {
+            const duration = await getAudioDurationMs(audioPath);
+            if (duration) {
+                item.durationMs = duration;
+                updateListItemElement(item.id);
+                scheduleSave();
+
+                // If user clicked a specific position, now seek to it accurately
+                if (seekPercentage !== null && this.currentId === item.id) {
+                    this.audio.currentTime = seekPercentage * (duration / 1000);
+                }
+            }
+        } catch (err) {
+            // Non-fatal
+        }
     },
 
     stop() {
@@ -2541,6 +2890,7 @@ const loadBeatmapFromDialog = async () => {
         beatmapItems = [...beatmapItems, ...items];
         updateTabCounts();
         renderFromState();
+        queueMissingAudioAnalysisFromItems(items);
         scheduleSave();
         processAudioQueue();
     } finally {
@@ -2550,97 +2900,74 @@ const loadBeatmapFromDialog = async () => {
     }
 };
 
-const loadBeatmapsFromResult = async (result, existingItemsMapOverride) => {
-    const listContainer = document.querySelector('#listContainer');
-    if (!result || !Array.isArray(result.files) || !listContainer) {
-        if (listContainer) updateEmptyState(listContainer);
-        return;
-    }
+// --- Streaming scan state ---
+let streamingScanState = null; // { directory, existingMap, items, processed, totalFiles, resolveComplete }
+let scanBatchUnlisten = null;
+let scanCompleteUnlisten = null;
 
-    setLoading(true);
-    try {
-        if (result.directory) {
-            lastScannedDirectory = result.directory;
+const initScanEventListeners = async () => {
+    if (!window.tauriEvents?.listen) return;
+
+    scanBatchUnlisten = await window.tauriEvents.listen('scan-batch', (payload) => {
+        if (!streamingScanState) return;
+        const { files, directory, totalFiles } = payload;
+
+        if (directory) {
+            streamingScanState.directory = directory;
+        }
+        if (totalFiles) {
+            streamingScanState.totalFiles = totalFiles;
+        }
+
+        for (const file of files) {
+            const existing = streamingScanState.existingMap.get(file.filePath);
+
+            if (file.unchanged && existing) {
+                streamingScanState.items.push(existing);
+                if (existing.audio && typeof existing.durationMs !== 'number') {
+                    scheduleAudioAnalysis(existing.id);
+                }
+            } else {
+                try {
+                    const item = processWorkerResult(file, existing);
+                    streamingScanState.items.push(item);
+                } catch (err) {
+                    console.error(`Failed to process beatmap: ${file.filePath}`, err);
+                }
+            }
+        }
+
+        streamingScanState.processed += files.length;
+        updateProgress(streamingScanState.processed, streamingScanState.totalFiles);
+    });
+
+    scanCompleteUnlisten = await window.tauriEvents.listen('scan-complete', (payload) => {
+        if (!streamingScanState) return;
+        const { directory, totalFiles } = payload;
+
+        if (directory) {
+            streamingScanState.directory = directory;
+            lastScannedDirectory = directory;
             localStorage.setItem('lastScannedDirectory', lastScannedDirectory);
         }
 
-        const items = [];
-        const total = result.files.length;
-        let processed = 0;
-        updateProgress(0, total);
+        const items = streamingScanState.items;
 
-        // Optimization: Use a Map for O(1) lookups instead of .find() O(N)
-        const existingItemsMap = existingItemsMapOverride instanceof Map
-            ? existingItemsMapOverride
-            : new Map();
-        if (!(existingItemsMapOverride instanceof Map)) {
-            beatmapItems.forEach(item => { if (item.filePath) existingItemsMap.set(item.filePath, item); });
-        }
-
-        let lastYield = performance.now();
-        const CONCURRENCY = 8;
-        const taskQueue = [...result.files];
-
-        const processNext = async () => {
-            while (taskQueue.length > 0) {
-                const file = taskQueue.shift();
-                const existing = existingItemsMap.get(file.filePath);
-
-                if (file.unchanged && existing) {
-                    items.push(existing);
-                } else {
-                    try {
-                        const item = await processWorkerResult(file, existing);
-                        items.push(item);
-                    } catch (err) {
-                        console.error(`Failed to process beatmap: ${file.filePath}`, err);
-                    }
-                }
-
-                processed += 1;
-                updateProgress(processed, total);
-
-                // Yield to browser UI thread every ~16ms to keep progress moving smoothly
-                if (performance.now() - lastYield > 16) {
-                    await new Promise(resolve => setTimeout(resolve, 0));
-                    lastYield = performance.now();
-                }
-            }
-        };
-
-        // Start concurrent workers
-        const workers = Array.from({ length: Math.min(CONCURRENCY, taskQueue.length) }, () => processNext());
-        await Promise.all(workers);
-
-        if (result.directory) {
-            // When refreshing a directory, we should remove all previous items that were in that directory
-            // BUT only if we were doing a full scan (no specific mapper) or if those items match the mapper filter.
-            // For simplicity and correctness of "Sync", let's remove items that are in the scanned folder
-            // if they were found in the current result set OR if they no longer exist there.
-
-            const normalizedDir = result.directory.toLowerCase().replace(/\\/g, '/');
+        if (streamingScanState.directory) {
+            const normalizedDir = streamingScanState.directory.toLowerCase().replace(/\\/g, '/');
             const endWithSlash = normalizedDir.endsWith('/') ? normalizedDir : normalizedDir + '/';
-
-            // If the scan was filtered by mapper, we only want to replace items matching that mapper in that folder
-            // But wait, the IPC result doesn't tell us if it was filtered.
-            // Let's use a simpler approach: remove items whose path is in the result set, 
-            // and if the folder scan returned 0 files, clear the folder.
-
             const newPaths = new Set(items.map(i => i.filePath));
 
             if (items.length === 0) {
-                // If the scan found nothing, we should remove all items from that folder (that might have matched our filter)
                 beatmapItems = beatmapItems.filter(item => {
                     const itemPath = item.filePath.toLowerCase().replace(/\\/g, '/');
                     return !itemPath.startsWith(endWithSlash);
                 });
             } else {
-                // Replace matching paths, keep everything else
                 const keptItems = beatmapItems.filter(i => !newPaths.has(i.filePath));
                 beatmapItems = [...keptItems, ...items];
             }
         } else {
-            // For single file imports, just merge by path
             const newPaths = new Set(items.map(i => i.filePath));
             const keptItems = beatmapItems.filter(i => !newPaths.has(i.filePath));
             beatmapItems = [...keptItems, ...items];
@@ -2648,13 +2975,105 @@ const loadBeatmapsFromResult = async (result, existingItemsMapOverride) => {
 
         updateTabCounts();
         renderFromState();
-        scheduleSave();
+        saveToStorage();
         processAudioQueue();
-    } catch (err) {
-        console.error('loadBeatmapsFromResult failed:', err);
-    } finally {
         setLoading(false);
+
+        if (streamingScanState.resolveComplete) {
+            streamingScanState.resolveComplete();
+        }
+        streamingScanState = null;
+    });
+};
+
+const startStreamingScan = (existingItemsMapOverride) => {
+    const existingMap = existingItemsMapOverride instanceof Map
+        ? existingItemsMapOverride
+        : new Map();
+    if (!(existingItemsMapOverride instanceof Map)) {
+        beatmapItems.forEach(item => { if (item.filePath) existingMap.set(item.filePath, item); });
     }
+
+    return new Promise((resolve) => {
+        streamingScanState = {
+            directory: '',
+            existingMap,
+            items: [],
+            processed: 0,
+            totalFiles: 0,
+            resolveComplete: resolve,
+        };
+        setLoading(true);
+        updateProgress(0, 0);
+    });
+};
+
+const loadBeatmapsFromResult = async (result, existingItemsMapOverride) => {
+    // For streaming scans, the IPC returns empty files array.
+    // The real data comes via scan-batch/scan-complete events.
+    // If we got actual files (e.g. from a non-streaming source), process them directly.
+    if (result && Array.isArray(result.files) && result.files.length > 0) {
+        const listContainer = document.querySelector('#listContainer');
+        if (!listContainer) return;
+
+        setLoading(true);
+        try {
+            if (result.directory) {
+                lastScannedDirectory = result.directory;
+                localStorage.setItem('lastScannedDirectory', lastScannedDirectory);
+            }
+
+            const existingItemsMap = existingItemsMapOverride instanceof Map
+                ? existingItemsMapOverride
+                : new Map();
+            if (!(existingItemsMapOverride instanceof Map)) {
+                beatmapItems.forEach(item => { if (item.filePath) existingItemsMap.set(item.filePath, item); });
+            }
+
+            const items = [];
+            for (const file of result.files) {
+                const existing = existingItemsMap.get(file.filePath);
+                if (file.unchanged && existing) {
+                    items.push(existing);
+                } else {
+                    try {
+                        items.push(processWorkerResult(file, existing));
+                    } catch (err) {
+                        console.error(`Failed to process beatmap: ${file.filePath}`, err);
+                    }
+                }
+            }
+
+            if (result.directory) {
+                const normalizedDir = result.directory.toLowerCase().replace(/\\/g, '/');
+                const endWithSlash = normalizedDir.endsWith('/') ? normalizedDir : normalizedDir + '/';
+                const newPaths = new Set(items.map(i => i.filePath));
+                if (items.length === 0) {
+                    beatmapItems = beatmapItems.filter(item => {
+                        const itemPath = item.filePath.toLowerCase().replace(/\\/g, '/');
+                        return !itemPath.startsWith(endWithSlash);
+                    });
+                } else {
+                    const keptItems = beatmapItems.filter(i => !newPaths.has(i.filePath));
+                    beatmapItems = [...keptItems, ...items];
+                }
+            } else {
+                const newPaths = new Set(items.map(i => i.filePath));
+                const keptItems = beatmapItems.filter(i => !newPaths.has(i.filePath));
+                beatmapItems = [...keptItems, ...items];
+            }
+
+            updateTabCounts();
+            renderFromState();
+            saveToStorage();
+            processAudioQueue();
+        } catch (err) {
+            console.error('loadBeatmapsFromResult failed:', err);
+        } finally {
+            setLoading(false);
+        }
+    }
+    // If files array is empty, streaming events handle everything
 };
 
 const refreshLastDirectory = async () => {
@@ -2668,18 +3087,6 @@ const refreshLastDirectory = async () => {
     const refreshBtn = document.querySelector('#refreshBtn');
     if (refreshBtn) refreshBtn.classList.add('is-refreshing');
 
-    // Ensure any pending audio analysis for current items is scheduled/resumed.
-    try {
-        if (Array.isArray(beatmapItems) && beatmapItems.length) {
-            beatmapItems.forEach(item => {
-                if (item && item.audio && !item.durationMs) {
-                    scheduleAudioAnalysis(item.id);
-                }
-            });
-        }
-        try { processAudioQueue(); } catch (e) { /* swallow */ }
-    } catch (e) { /* non-fatal */ }
-
     try {
         const mapperName = (getEffectiveMapperName() || '').trim() || null;
 
@@ -2689,8 +3096,10 @@ const refreshLastDirectory = async () => {
             if (item.filePath) knownFiles[item.filePath] = item.dateModified;
         });
 
-        const result = await window.beatmapApi.scanDirectoryOsuFiles(targetDir, mapperName, knownFiles);
-        await loadBeatmapsFromResult(result);
+        // Start streaming scan — results arrive via scan-batch events
+        const scanDone = startStreamingScan();
+        await window.beatmapApi.scanDirectoryOsuFiles(targetDir, mapperName, knownFiles);
+        await scanDone;
 
         // Success animation
         if (refreshBtn) {
@@ -2699,8 +3108,9 @@ const refreshLastDirectory = async () => {
         }
     } catch (error) {
         console.error('Refresh failed:', error);
-    } finally {
+        streamingScanState = null;
         setLoading(false);
+    } finally {
         if (refreshBtn) refreshBtn.classList.remove('is-refreshing');
     }
 };
@@ -2745,16 +3155,32 @@ const loadBeatmapsByMapper = async () => {
     if (!mapperName) {
         return;
     }
+    const scanDone = startStreamingScan();
     const result = await window.beatmapApi.openMapperOsuFiles(mapperName);
-    await loadBeatmapsFromResult(result);
+    if (!result) {
+        // User cancelled folder picker — clean up streaming state
+        if (streamingScanState?.resolveComplete) streamingScanState.resolveComplete();
+        streamingScanState = null;
+        setLoading(false);
+        return;
+    }
+    await scanDone;
 };
 
 const loadBeatmapsFromFolder = async () => {
     if (!window.beatmapApi?.openFolderOsuFiles) {
         return;
     }
+    const scanDone = startStreamingScan();
     const result = await window.beatmapApi.openFolderOsuFiles();
-    await loadBeatmapsFromResult(result);
+    if (!result) {
+        // User cancelled folder picker — clean up streaming state
+        if (streamingScanState?.resolveComplete) streamingScanState.resolveComplete();
+        streamingScanState = null;
+        setLoading(false);
+        return;
+    }
+    await scanDone;
 };
 
 const initEventDelegation = () => {
@@ -2817,6 +3243,9 @@ const init = async () => {
     const closeAboutBtn = document.querySelector('#closeAboutBtn');
     const tabButtons = document.querySelectorAll('.tab-button');
     const closeSettingsBtn = document.querySelector('#closeSettingsBtn');
+    const changelogDialog = document.querySelector('#changelogDialog');
+    const closeChangelogBtn = document.querySelector('#closeChangelogBtn');
+    const versionIndicator = document.querySelector('#versionIndicator');
     const selectSongsDirBtn = document.querySelector('#selectSongsDirBtn');
     const rescanNameInput = document.getElementById('rescanMapperName');
 
@@ -2890,7 +3319,7 @@ const init = async () => {
 
         const embedUrlValue = document.querySelector('#embedUrlValue');
         if (embedUrlValue) {
-            embedUrlValue.textContent = settings.userId 
+            embedUrlValue.textContent = settings.userId
                 ? `${settings.embedSyncUrl}/embed/${settings.userId}`
                 : 'Generate user ID first';
         }
@@ -2987,6 +3416,32 @@ const init = async () => {
                 closeDialogWithAnimation(aboutDialog);
             }
         });
+    }
+
+    // Changelog Listeners
+    const showChangelog = async () => {
+        if (!changelogDialog) return;
+        // Update the version tag in the changelog
+        if (window.appInfo?.getVersion) {
+            const version = await window.appInfo.getVersion();
+            const tag = document.querySelector('#changelogVersionTag');
+            if (tag) tag.textContent = `v${version}`;
+        }
+        changelogDialog.showModal();
+    };
+
+    if (closeChangelogBtn && changelogDialog) {
+        closeChangelogBtn.addEventListener('click', () => closeDialogWithAnimation(changelogDialog));
+    }
+    if (changelogDialog) {
+        changelogDialog.addEventListener('click', (event) => {
+            if (event.target === changelogDialog) {
+                closeDialogWithAnimation(changelogDialog);
+            }
+        });
+    }
+    if (versionIndicator) {
+        versionIndicator.addEventListener('click', showChangelog);
     }
 
     // Settings Listeners
@@ -3154,15 +3609,17 @@ const init = async () => {
                     const targetDir = settings.songsDir || lastScannedDirectory;
                     if (mapper && targetDir && window.beatmapApi?.scanDirectoryOsuFiles) {
                         (async () => {
-                            setLoading(true);
                             try {
                                 const knownFiles = {};
-                                const result = await window.beatmapApi.scanDirectoryOsuFiles(targetDir, mapper, knownFiles);
-                                await loadBeatmapsFromResult(result, preserved);
-                                try { processAudioQueue(); } catch (e) { }
+                                preserved.forEach((item, filePath) => {
+                                    if (item && typeof item.dateModified === 'number') knownFiles[filePath] = item.dateModified;
+                                });
+                                const scanDone = startStreamingScan(preserved);
+                                await window.beatmapApi.scanDirectoryOsuFiles(targetDir, mapper, knownFiles);
+                                await scanDone;
                             } catch (err) {
                                 console.error('Mapper rescan after toggle failed:', err);
-                            } finally {
+                                streamingScanState = null;
                                 setLoading(false);
                             }
                         })();
@@ -3188,15 +3645,17 @@ const init = async () => {
                     const targetDir = settings.songsDir || lastScannedDirectory;
                     if (targetDir && window.beatmapApi?.scanDirectoryOsuFiles) {
                         (async () => {
-                            setLoading(true);
                             try {
                                 const knownFiles = {};
-                                const result = await window.beatmapApi.scanDirectoryOsuFiles(targetDir, null, knownFiles);
-                                await loadBeatmapsFromResult(result, preserved);
-                                try { processAudioQueue(); } catch (e) { }
+                                preserved.forEach((item, filePath) => {
+                                    if (item && typeof item.dateModified === 'number') knownFiles[filePath] = item.dateModified;
+                                });
+                                const scanDone = startStreamingScan(preserved);
+                                await window.beatmapApi.scanDirectoryOsuFiles(targetDir, null, knownFiles);
+                                await scanDone;
                             } catch (err) {
                                 console.error('Full rescan after toggle failed:', err);
-                            } finally {
+                                streamingScanState = null;
                                 setLoading(false);
                             }
                         })();
@@ -3269,7 +3728,6 @@ const init = async () => {
                     return;
                 }
 
-                setLoading(true);
                 try {
                     const knownFiles = {};
                     beatmapItems.forEach(item => {
@@ -3277,19 +3735,15 @@ const init = async () => {
                     });
 
                     const mapper = getEffectiveMapperName();
-                    const result = await window.beatmapApi.scanDirectoryOsuFiles(targetDir, mapper || null, knownFiles);
-                    if (result && result.files && result.files.length) {
-                        await loadBeatmapsFromResult(result);
-                    } else {
-                        updateTabCounts();
-                        renderFromState();
-                    }
+                    const scanDone = startStreamingScan();
+                    await window.beatmapApi.scanDirectoryOsuFiles(targetDir, mapper || null, knownFiles);
+                    await scanDone;
                 } catch (err) {
                     console.error('Mapper rescan failed:', err);
+                    streamingScanState = null;
+                    setLoading(false);
                     updateTabCounts();
                     renderFromState();
-                } finally {
-                    setLoading(false);
                 }
             }, 500);
         });
@@ -3331,7 +3785,7 @@ const init = async () => {
         const clickedUploadToggle = uploadMenuToggle && uploadMenuToggle.contains(target);
         const clickedSettingsBtn = settingsBtn && settingsBtn.contains(target);
 
-        const isAnyDialogOpen = (settingsDialog && settingsDialog.open) || (mapperPrompt && mapperPrompt.open) || (aboutDialog && aboutDialog.open);
+        const isAnyDialogOpen = (settingsDialog && settingsDialog.open) || (mapperPrompt && mapperPrompt.open) || (aboutDialog && aboutDialog.open) || (changelogDialog && changelogDialog.open);
 
         if (isAnyDialogOpen) {
             return;
@@ -3514,23 +3968,33 @@ const init = async () => {
         });
     }
 
-    // Virtual Scroll Sync
-    window.addEventListener('scroll', () => syncVirtualList(), { passive: true });
+    // Virtual Scroll Sync — debounced via rAF to avoid redundant work
+    let scrollRAF = null;
+    const debouncedSync = () => {
+        if (scrollRAF) return;
+        scrollRAF = requestAnimationFrame(() => {
+            scrollRAF = null;
+            syncVirtualList();
+        });
+    };
+    window.addEventListener('scroll', debouncedSync, { passive: true });
+    window.addEventListener('resize', debouncedSync, { passive: true });
 
+
+    // Force-save on app close so audio durations and state are never lost
+    window.addEventListener('beforeunload', () => {
+        if (saveTimer) {
+            window.clearTimeout(saveTimer);
+            saveTimer = null;
+        }
+        saveToStorage();
+        persistAudioAnalysisState();
+    });
 
     // Startup sequence
     loadSettings();
+    await initScanEventListeners();
     await loadFromStorage();
-
-    // Auto-detect if audio analysis is needed for any loaded items
-    if (Array.isArray(beatmapItems) && beatmapItems.some(item => item && item.audio && typeof item.durationMs !== 'number')) {
-        beatmapItems.forEach(item => {
-            if (item && item.audio && typeof item.durationMs !== 'number') {
-                scheduleAudioAnalysis(item.id);
-            }
-        });
-        try { processAudioQueue(); } catch (e) { /* ignore */ }
-    }
 
     initEventDelegation();
     updateSortUI();
@@ -3807,6 +4271,21 @@ const init = async () => {
 
     // Check for updates in the background
     checkForUpdates();
+
+    // Show changelog on first startup after an update
+    if (window.appInfo?.getVersion) {
+        try {
+            const currentVersion = await window.appInfo.getVersion();
+            const lastSeenVersion = localStorage.getItem('mosu_lastSeenVersion');
+            if (lastSeenVersion && lastSeenVersion !== currentVersion) {
+                // Version changed since last run — show changelog
+                showChangelog();
+            }
+            localStorage.setItem('mosu_lastSeenVersion', currentVersion);
+        } catch (e) {
+            // Non-fatal
+        }
+    }
 };
 
 const checkForUpdates = async () => {
@@ -3815,30 +4294,39 @@ const checkForUpdates = async () => {
 
     try {
         const result = await window.appInfo.checkForUpdates();
-        if (result.error) {
-            indicator.textContent = '?';
-            indicator.title = 'Could not check for updates';
-            indicator.className = 'version-indicator error';
+
+        const current = (result.currentVersion || '').replace(/^v/, '');
+        const latest = (result.latestVersion || '').replace(/^v/, '');
+
+        // If we got an error or no latest version info, just show the current version
+        if (result.error || !latest) {
+            indicator.textContent = `v${current}`;
+            indicator.dataset.tooltip = current ? `Current version: v${current}` : 'Could not check for updates';
+            indicator.className = 'version-indicator up-to-date';
             indicator.style.display = '';
             return;
         }
 
-        const current = result.currentVersion.replace(/^v/, '');
-        const latest = result.latestVersion.replace(/^v/, '');
-
         // Compare base versions (strip pre-release suffixes like -beta for comparison)
-        const parseVer = (v) => v.replace(/-.+$/, '').split('.').map(Number);
+        const parseVer = (v) => {
+            const parts = v.replace(/-.+$/, '').split('.').map(Number);
+            return [parts[0] || 0, parts[1] || 0, parts[2] || 0];
+        };
         const cur = parseVer(current);
         const lat = parseVer(latest);
-        const isUpToDate = lat[0] < cur[0] || (lat[0] === cur[0] && (lat[1] < cur[1] || (lat[1] === cur[1] && lat[2] <= cur[2])));
+
+        // Check if current >= latest (accounting for pre-release: 0.3.0-beta is still 0.3.0)
+        const isUpToDate = cur[0] > lat[0] ||
+            (cur[0] === lat[0] && cur[1] > lat[1]) ||
+            (cur[0] === lat[0] && cur[1] === lat[1] && cur[2] >= lat[2]);
 
         if (isUpToDate) {
             indicator.textContent = `v${current} ✓`;
-            indicator.title = 'You are on the latest version';
+            indicator.dataset.tooltip = 'You are on the latest version';
             indicator.className = 'version-indicator up-to-date';
         } else {
             indicator.textContent = `v${latest} available`;
-            indicator.title = `Update available! Click to open download page (current: v${current})`;
+            indicator.dataset.tooltip = `Update available! Click to open download page (current: v${current})`;
             indicator.className = 'version-indicator update-available';
             indicator.onclick = () => {
                 if (result.htmlUrl && window.appInfo?.openExternalUrl) {
@@ -3849,7 +4337,7 @@ const checkForUpdates = async () => {
         indicator.style.display = '';
     } catch {
         indicator.textContent = '?';
-        indicator.title = 'Could not check for updates';
+        indicator.dataset.tooltip = 'Could not check for updates';
         indicator.className = 'version-indicator error';
         indicator.style.display = '';
     }

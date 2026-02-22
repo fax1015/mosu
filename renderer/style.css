@@ -23,6 +23,7 @@
 *::before,
 *::after {
     box-sizing: border-box;
+    -webkit-tap-highlight-color: transparent;
 }
 
 *:not(dialog) {
@@ -31,7 +32,7 @@
 
 @font-face {
     font-family: 'Torus';
-    src: url('../assets/fonts/Torus-Thin.otf') format('opentype');
+    src: url('./assets/fonts/Torus-Thin.otf') format('opentype');
     font-weight: 100;
     font-style: normal;
     font-display: swap;
@@ -39,7 +40,7 @@
 
 @font-face {
     font-family: 'Torus';
-    src: url('../assets/fonts/Torus-Light.otf') format('opentype');
+    src: url('./assets/fonts/Torus-Light.otf') format('opentype');
     font-weight: 300;
     font-style: normal;
     font-display: swap;
@@ -47,7 +48,7 @@
 
 @font-face {
     font-family: 'Torus';
-    src: url('../assets/fonts/Torus-Regular.otf') format('opentype');
+    src: url('./assets/fonts/Torus-Regular.otf') format('opentype');
     font-weight: 400;
     font-style: normal;
     font-display: swap;
@@ -55,7 +56,7 @@
 
 @font-face {
     font-family: 'Torus';
-    src: url('../assets/fonts/Torus-SemiBold.otf') format('opentype');
+    src: url('./assets/fonts/Torus-SemiBold.otf') format('opentype');
     font-weight: 600;
     font-style: normal;
     font-display: swap;
@@ -63,7 +64,7 @@
 
 @font-face {
     font-family: 'Torus';
-    src: url('../assets/fonts/Torus-Bold.otf') format('opentype');
+    src: url('./assets/fonts/Torus-Bold.otf') format('opentype');
     font-weight: 700;
     font-style: normal;
     font-display: swap;
@@ -71,7 +72,7 @@
 
 @font-face {
     font-family: 'Torus';
-    src: url('../assets/fonts/Torus-Heavy.otf') format('opentype');
+    src: url('./assets/fonts/Torus-Heavy.otf') format('opentype');
     font-weight: 900;
     font-style: normal;
     font-display: swap;
@@ -122,6 +123,7 @@ button,
 textarea,
 select {
     font: inherit;
+    outline: none;
 }
 
 p,
@@ -183,6 +185,53 @@ h6 {
 
     --list-item-height: 240px;
     --list-item-gap: 12px;
+}
+
+#mosuCustomTooltip {
+    position: fixed;
+    pointer-events: none;
+    visibility: hidden;
+    z-index: 2147483647;
+    padding: 0.3rem 0.5rem;
+    background: rgba(48, 46, 56, 0.5);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border-radius: 8px;
+    color: #ffffff;
+    font-size: var(--font-tag);
+    font-weight: 400;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+    opacity: 0;
+    transform: translateY(6px) scale(0.92);
+    transition: opacity 0.15s ease, transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
+    white-space: nowrap;
+}
+
+#mosuCustomTooltip.visible {
+    visibility: visible;
+    opacity: 1;
+    transform: translateY(0) scale(1);
+}
+
+#mosuCustomTooltip::after {
+    content: '';
+    position: absolute;
+    border-width: 6px;
+    border-style: solid;
+    left: var(--arrow-left, 50%);
+    transform: translateX(-50%);
+    filter: drop-shadow(0 2px 2px rgba(0, 0, 0, 0.2));
+}
+
+#mosuCustomTooltip.mosu-tooltip--top::after {
+    top: 100%;
+    border-color: rgba(60, 58, 70, 0.8) transparent transparent transparent;
+}
+
+#mosuCustomTooltip.mosu-tooltip--bottom::after {
+    bottom: 100%;
+    border-color: transparent transparent rgba(60, 58, 70, 0.8) transparent;
 }
 
 .header-container {
@@ -1298,7 +1347,6 @@ h6 {
 
 .target-star-input:focus {
     border-color: var(--accent-primary);
-    box-shadow: 0 0 0 2px rgba(var(--accent-primary-rgb), 0.2);
 }
 
 .target-star-input::-webkit-inner-spin-button,
@@ -1608,7 +1656,6 @@ h6 {
     letter-spacing: 0.01em;
     border: 1px solid rgba(255, 255, 255, 0.08);
     box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
-    /* Truncation for long difficulty/creator names */
     max-width: clamp(140px, calc(var(--list-item-height) * 1.5), 350px);
     white-space: nowrap;
     overflow: hidden;
@@ -1709,6 +1756,7 @@ h6 {
     max-width: 600px;
     box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
     animation: dialog-enter 0.4s cubic-bezier(0.32, 0.72, 0, 1);
+    outline: none;
 }
 
 .prompt-dialog.is-closing {
@@ -2080,7 +2128,6 @@ input:checked+.slider:before {
 .user-id-display:focus {
     outline: none;
     border-color: var(--accent-primary);
-    box-shadow: 0 0 0 2px rgba(255, 102, 170, 0.3);
 }
 
 .user-id-display code {
@@ -2174,7 +2221,7 @@ input:checked+.slider:before {
     font-weight: 600;
     padding: 2px 7px;
     border-radius: 100px;
-    cursor: default;
+    cursor: pointer;
     white-space: nowrap;
     -webkit-app-region: no-drag;
     transition: opacity 0.2s;
@@ -2245,4 +2292,53 @@ input:checked+.slider:before {
 .about-credit-line {
     font-size: var(--font-small);
     color: var(--text-secondary);
+}
+
+/* Changelog Dialog */
+.changelog-dialog {
+    min-width: 420px;
+    max-width: 520px;
+}
+
+.changelog-content {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+}
+
+.changelog-version-header {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.changelog-version-tag {
+    display: inline-block;
+    font-size: 0.75rem;
+    font-weight: 700;
+    padding: 2px 10px;
+    border-radius: 100px;
+    background: rgba(76, 175, 80, 0.15);
+    color: #4caf50;
+}
+
+.changelog-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+.changelog-list li {
+    font-size: var(--font-small);
+    color: var(--text-secondary);
+    padding: 0.4rem 0.75rem;
+    border-left: 2px solid var(--accent-primary);
+    line-height: 1.5;
+}
+
+.changelog-list li strong {
+    color: var(--text-primary);
 }

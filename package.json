@@ -1,38 +1,25 @@
 {
   "name": "mosu",
-  "version": "0.2.0-beta",
+  "version": "0.3.0-beta",
   "description": "tracks the progress done of osu! maps",
   "keywords": [
-    "electron",
+    "tauri",
     "osu!",
     "map"
   ],
   "license": "MIT",
   "author": "fax1015",
-  "type": "commonjs",
-  "main": "main.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "start": "electron-forge start",
-    "package": "electron-forge package",
-    "make": "electron-forge make",
-    "dev:watch": "npx electronmon --trace-warnings ."
+    "start": "tauri dev",
+    "dev": "tauri dev",
+    "build": "tauri build",
+    "package": "tauri build",
+    "make": "tauri build",
+    "dev:watch": "tauri dev"
   },
-  "dependencies": {
-
-  },
+  "dependencies": {},
   "devDependencies": {
-    "@electron-forge/cli": "^7.11.1",
-    "@electron-forge/core": "^7.11.1",
-    "@electron-forge/core-utils": "^7.11.1",
-    "@electron-forge/maker-zip": "^7.6.0",
-    "@electron-forge/plugin-auto-unpack-natives": "^7.6.0",
-    "@electron-forge/plugin-fuses": "^7.6.0",
-    "@electron-forge/shared-types": "^7.11.1",
-    "@electron/fuses": "^1.8.0",
-    "electron": "^40.2.1"
-  },
-  "config": {
-    "forge": "./forge.config.js"
+    "@tauri-apps/cli": "^2.0.0"
   }
 }
