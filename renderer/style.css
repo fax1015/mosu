@@ -460,6 +460,12 @@ h6 {
     outline: 2px solid var(--accent-primary);
 }
 
+body.is-dragging-any,
+body.is-dragging-any * {
+    user-select: none;
+    -webkit-user-select: none;
+}
+
 /* Todo Numbers */
 .todo-number {
     position: absolute;

@@ -8,7 +8,7 @@ use std::fs;
 use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, UNIX_EPOCH};
 use tauri::Emitter;
 use walkdir::WalkDir;
@@ -792,9 +792,22 @@ fn scan_directory_internal(
     }
 }
 
+fn resolve_app_version(app_handle: &tauri::AppHandle) -> String {
+    static PACKAGE_VERSION: OnceLock<Option<String>> = OnceLock::new();
+    let pkg_version = PACKAGE_VERSION.get_or_init(|| {
+        // package.json lives at the repo root (two levels up from src-tauri/src)
+        serde_json::from_str::<Value>(include_str!("../../package.json")).ok().and_then(|json| {
+            json.get("version").and_then(Value::as_str).map(|s| s.to_string())
+        })
+    });
+    pkg_version
+        .clone()
+        .unwrap_or_else(|| app_handle.package_info().version.to_string())
+}
+
 #[tauri::command]
 fn get_app_version(app_handle: tauri::AppHandle) -> String {
-    app_handle.package_info().version.to_string()
+    resolve_app_version(&app_handle)
 }
 
 #[tauri::command]
@@ -808,7 +821,7 @@ fn open_external_url(url: String) -> Result<(), String> {
 
 #[tauri::command]
 async fn check_for_updates(app_handle: tauri::AppHandle) -> UpdateInfoPayload {
-    let current_version = app_handle.package_info().version.to_string();
+    let current_version = resolve_app_version(&app_handle);
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(15))
         .build();

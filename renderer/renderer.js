@@ -1584,7 +1584,6 @@ const buildListItem = (metadata, index) => {
         num.classList.add('todo-number');
         num.textContent = `${index + 1}.`;
         details.appendChild(num);
-        listBox.setAttribute('draggable', 'true');
     }
 
     listMain.appendChild(details);
@@ -3396,14 +3395,25 @@ const init = async () => {
         });
     });
 
+    const updateVersionLabels = async () => {
+        if (!window.appInfo?.getVersion) return null;
+        try {
+            const version = await window.appInfo.getVersion();
+            const aboutVersionEl = document.querySelector('#aboutVersion');
+            if (aboutVersionEl) aboutVersionEl.textContent = `v${version}`;
+            const changelogVersionEl = document.querySelector('#changelogVersionTag');
+            if (changelogVersionEl) changelogVersionEl.textContent = `v${version}`;
+            return version;
+        } catch (err) {
+            console.error('Failed to fetch app version:', err);
+            return null;
+        }
+    };
+
     // About Listeners
     if (aboutBtn && aboutDialog) {
         aboutBtn.addEventListener('click', async () => {
-            if (window.appInfo?.getVersion) {
-                const version = await window.appInfo.getVersion();
-                const versionEl = document.querySelector('#aboutVersion');
-                if (versionEl) versionEl.textContent = `v${version}`;
-            }
+            await updateVersionLabels();
             aboutDialog.showModal();
         });
     }
@@ -3421,12 +3431,7 @@ const init = async () => {
     // Changelog Listeners
     const showChangelog = async () => {
         if (!changelogDialog) return;
-        // Update the version tag in the changelog
-        if (window.appInfo?.getVersion) {
-            const version = await window.appInfo.getVersion();
-            const tag = document.querySelector('#changelogVersionTag');
-            if (tag) tag.textContent = `v${version}`;
-        }
+        await updateVersionLabels();
         changelogDialog.showModal();
     };
 
@@ -3878,7 +3883,7 @@ const init = async () => {
         });
     }
 
-    // Drag and Drop for todo list
+    // Drag and Drop for todo list (pointer-driven for Tauri compatibility)
     if (listContainer) {
         const stopAutoScroll = () => {
             if (autoScrollTimer) {
@@ -3907,65 +3912,137 @@ const init = async () => {
             }, 16);
         };
 
-        listContainer.addEventListener('dragstart', (e) => {
-            if (viewMode !== 'todo') return;
-            const listBox = e.target.closest('.list-box');
-            if (listBox) {
-                e.dataTransfer.setData('text/plain', listBox.dataset.itemId);
-                e.dataTransfer.effectAllowed = 'move';
-                setTimeout(() => listBox.classList.add('is-dragging'), 0);
-                currentMouseY = e.clientY;
-                startAutoScroll();
-            }
-        });
+        const pointerDragState = {
+            pointerId: null,
+            isPointerDown: false,
+            isDragging: false,
+            draggedElement: null,
+            draggedId: null,
+            dropTarget: null,
+            startX: 0,
+            startY: 0,
+        };
 
-        listContainer.addEventListener('dragend', (e) => {
+        const clearDropTarget = () => {
+            if (pointerDragState.dropTarget) {
+                pointerDragState.dropTarget.classList.remove('drop-target');
+                pointerDragState.dropTarget = null;
+            }
+        };
+
+        const resetPointerDragState = () => {
             stopAutoScroll();
-            const listBox = e.target.closest('.list-box');
-            if (listBox) {
-                listBox.classList.remove('is-dragging');
+            clearDropTarget();
+            if (pointerDragState.draggedElement) {
+                pointerDragState.draggedElement.classList.remove('is-dragging');
             }
-            document.querySelectorAll('.list-box').forEach(el => el.classList.remove('drop-target'));
-        });
+            document.body?.classList.remove('is-dragging-any');
+            pointerDragState.pointerId = null;
+            pointerDragState.isPointerDown = false;
+            pointerDragState.isDragging = false;
+            pointerDragState.draggedElement = null;
+            pointerDragState.draggedId = null;
+            pointerDragState.startX = 0;
+            pointerDragState.startY = 0;
+        };
 
-        listContainer.addEventListener('dragover', (e) => {
+        const shouldIgnoreDragStart = (target) => {
+            if (!target) return false;
+            return Boolean(target.closest('button, a, input, textarea, select, .list-timeline, .deadline-container, .target-star-container, .extra-actions, .list-action-links'));
+        };
+
+        const updateDropTarget = (clientX, clientY) => {
+            const candidate = document.elementFromPoint(clientX, clientY)?.closest('.list-box');
+            if (!candidate || candidate === pointerDragState.draggedElement) {
+                clearDropTarget();
+                return;
+            }
+
+            if (pointerDragState.dropTarget !== candidate) {
+                clearDropTarget();
+                candidate.classList.add('drop-target');
+                pointerDragState.dropTarget = candidate;
+            }
+        };
+
+        const handlePointerDown = (e) => {
             if (viewMode !== 'todo') return;
+            if (e.button !== 0) return;
+            const listBox = e.target.closest('.list-box');
+            if (!listBox || shouldIgnoreDragStart(e.target)) return;
+
+            pointerDragState.isPointerDown = true;
+            pointerDragState.pointerId = e.pointerId;
+            pointerDragState.draggedElement = listBox;
+            pointerDragState.draggedId = listBox.dataset.itemId;
+            pointerDragState.startX = e.clientX;
+            pointerDragState.startY = e.clientY;
+            currentMouseY = e.clientY;
+        };
+
+        const maybeStartDragging = () => {
+            if (pointerDragState.isDragging || !pointerDragState.draggedElement) return;
+            pointerDragState.isDragging = true;
+            pointerDragState.draggedElement.classList.add('is-dragging');
+            document.body?.classList.add('is-dragging-any');
+            startAutoScroll();
+        };
+
+        const handlePointerMove = (e) => {
+            if (!pointerDragState.isPointerDown || e.pointerId !== pointerDragState.pointerId) return;
+
+            const deltaX = Math.abs(e.clientX - pointerDragState.startX);
+            const deltaY = Math.abs(e.clientY - pointerDragState.startY);
+            if (!pointerDragState.isDragging && deltaX + deltaY > 6) {
+                maybeStartDragging();
+            }
+
+            if (!pointerDragState.isDragging) return;
+
             e.preventDefault();
             currentMouseY = e.clientY;
-            const listBox = e.target.closest('.list-box');
-            if (listBox && !listBox.classList.contains('is-dragging')) {
-                listBox.classList.add('drop-target');
+            updateDropTarget(e.clientX, e.clientY);
+        };
+
+        const commitReorder = () => {
+            if (!pointerDragState.draggedId || !pointerDragState.dropTarget) {
+                return;
             }
-        });
 
-        listContainer.addEventListener('dragleave', (e) => {
-            const listBox = e.target.closest('.list-box');
-            if (listBox) {
-                listBox.classList.remove('drop-target');
+            const draggedId = pointerDragState.draggedId;
+            const dropId = pointerDragState.dropTarget.dataset.itemId;
+            if (!dropId || dropId === draggedId) {
+                return;
             }
-        });
-
-        listContainer.addEventListener('drop', (e) => {
-            stopAutoScroll();
-            if (viewMode !== 'todo') return;
-            e.preventDefault();
-            const draggedId = e.dataTransfer.getData('text/plain');
-            const dropBox = e.target.closest('.list-box');
-            if (!dropBox) return;
-
-            const dropId = dropBox.dataset.itemId;
-            if (draggedId === dropId) return;
 
             const fromIndex = todoIds.indexOf(draggedId);
             const toIndex = todoIds.indexOf(dropId);
-
-            if (fromIndex !== -1 && toIndex !== -1) {
-                const [movedItem] = todoIds.splice(fromIndex, 1);
-                todoIds.splice(toIndex, 0, movedItem);
-                scheduleSave();
-                renderFromState(); // Re-render to reflect new order
+            if (fromIndex === -1 || toIndex === -1) {
+                return;
             }
-        });
+
+            const [movedItem] = todoIds.splice(fromIndex, 1);
+            todoIds.splice(toIndex, 0, movedItem);
+            scheduleSave();
+            renderFromState();
+        };
+
+        const handlePointerUp = (e) => {
+            if (!pointerDragState.isPointerDown || e.pointerId !== pointerDragState.pointerId) {
+                return;
+            }
+
+            if (pointerDragState.isDragging) {
+                commitReorder();
+            }
+
+            resetPointerDragState();
+        };
+
+        listContainer.addEventListener('pointerdown', handlePointerDown);
+        window.addEventListener('pointermove', handlePointerMove, { passive: false });
+        window.addEventListener('pointerup', handlePointerUp);
+        window.addEventListener('pointercancel', handlePointerUp);
     }
 
     // Virtual Scroll Sync — debounced via rAF to avoid redundant work
@@ -4321,7 +4398,7 @@ const checkForUpdates = async () => {
             (cur[0] === lat[0] && cur[1] === lat[1] && cur[2] >= lat[2]);
 
         if (isUpToDate) {
-            indicator.textContent = `v${current} ✓`;
+            indicator.textContent = `v${current}`;
             indicator.dataset.tooltip = 'You are on the latest version';
             indicator.className = 'version-indicator up-to-date';
         } else {
