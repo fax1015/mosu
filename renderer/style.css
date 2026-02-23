@@ -1225,7 +1225,7 @@ body.is-dragging-any * {
 .expand-icon {
     width: 14px;
     height: 14px;
-    fill: var(--bg-quaternary);
+    color: var(--text-secondary);
     transition: transform 0.3s cubic-bezier(0.32, 0.72, 0, 1), fill 0.2s ease;
     opacity: 0.7;
     margin-right: 0.5rem;
@@ -1234,7 +1234,7 @@ body.is-dragging-any * {
 .list-box:hover .expand-icon,
 .list-box.expanded .expand-icon {
     opacity: 1;
-    fill: var(--bg-quaternary);
+    fill: var(--text-secondary);
 }
 
 .list-box.expanded .expand-icon {
@@ -2347,4 +2347,344 @@ input:checked+.slider:before {
 
 .changelog-list li strong {
     color: var(--text-primary);
+}
+
+/* ============================================================
+   Grouped-by-song View
+   ============================================================ */
+
+/* Container in grouped mode: normal flow, not absolute-positioned */
+.list-container.view-grouped {
+    contain: none !important;
+    display: block !important;
+    height: auto !important;
+    min-height: 0;
+}
+
+/* ---- Group Row (wrapper) ---- */
+.group-row {
+    background: var(--bg-secondary);
+    border-radius: var(--border-radius);
+    overflow: hidden;
+    box-shadow: var(--shadow);
+    transition: box-shadow 0.2s ease;
+    margin-bottom: 8px;
+    transform: translateZ(0);
+    /* force GPU layer for the entire group */
+    contain: paint;
+    /* major optimization — internal changes don't affect siblings */
+}
+
+.group-row.is-expanded {
+    box-shadow: 0 6px 24px rgba(0, 0, 0, 0.4);
+    /* keep overflow:hidden — border-radius is handled on .group-row-cover directly */
+}
+
+/* ---- Group Header (clickable bar) ---- */
+.group-row-header {
+    display: flex;
+    align-items: stretch;
+    min-height: 100px;
+    /* comfortable minimum */
+    max-height: 230px;
+    /* cap for very many difficulties */
+    position: relative;
+    overflow: hidden;
+    cursor: pointer;
+    transition: background 0.2s ease;
+    user-select: none;
+}
+
+.group-row-header:hover {
+    background: rgba(255, 255, 255, 0.03);
+}
+
+/* Cover section: capped at 55% of header width so carousel has room */
+.group-row-cover-section {
+    flex: 0 0 70%;
+    position: relative;
+    overflow: hidden;
+    min-width: 0;
+}
+
+/* Cover image: fills cover-section completely */
+.group-row-cover {
+    position: absolute;
+    inset: 0;
+    overflow: hidden;
+    background: var(--bg-tertiary);
+}
+
+.group-row-cover img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+}
+
+/* Dual gradient: dark bottom for text legibility + right fade into container bg */
+.group-row-cover-overlay {
+    position: absolute;
+    inset: 0;
+    background:
+        linear-gradient(to right, transparent 30%, var(--bg-secondary) 100%),
+        linear-gradient(to top, rgba(0, 0, 0, 0.80) 0%, rgba(0, 0, 0, 0.20) 55%, transparent 100%);
+    pointer-events: none;
+}
+
+/* Song info overlays the cover at the bottom */
+.group-row-info {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    z-index: 2;
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+    padding: 0.55rem 0.875rem;
+}
+
+.group-row-title {
+    font-size: 0.95rem;
+    font-weight: 700;
+    color: #fff;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    text-shadow: 0 1px 6px rgba(0, 0, 0, 0.9), 0 2px 12px rgba(0, 0, 0, 0.7);
+}
+
+.group-row-count {
+    font-size: var(--font-tag);
+    color: rgba(255, 255, 255, 0.65);
+    font-weight: 500;
+    text-shadow: 0 1px 4px rgba(0, 0, 0, 0.8);
+}
+
+/* Version carousel: grows to fill all space the cover doesn't take */
+.group-row-carousel {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 5px;
+    flex: 1;
+    min-width: 150px;
+    flex-shrink: 0;
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding: 0 0.75rem 0 0.875rem;
+}
+
+.group-row-carousel::before,
+.group-row-carousel::after {
+    content: '';
+    flex: 1 0 14px;
+}
+
+.group-row-carousel::-webkit-scrollbar {
+    width: 3px;
+}
+
+.group-row-carousel::-webkit-scrollbar-track {
+    background: transparent;
+    margin: 10px 0;
+}
+
+.group-row-carousel::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.07);
+    border-radius: 999px;
+}
+
+.group-row-carousel:hover::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.18);
+}
+
+.group-row-version-chip {
+    display: inline-block;
+    flex-shrink: 0;
+    padding: 2px 10px;
+    border-radius: 999px;
+    background: rgba(140, 102, 255, 0.12);
+    border: 1px solid rgba(140, 102, 255, 0.25);
+    color: var(--text-secondary);
+    font-size: var(--font-tag);
+    font-weight: 600;
+    white-space: nowrap;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    transition: all 0.15s ease;
+    cursor: pointer;
+}
+
+.group-row-version-chip:hover {
+    background: rgba(140, 102, 255, 0.25);
+    color: #fff;
+    border-color: rgba(140, 102, 255, 0.5);
+    transform: translateY(-1px);
+}
+
+.group-row-chevron {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 40px;
+    min-width: 40px;
+    height: 100%;
+    padding: 0.75rem;
+    color: var(--text-secondary);
+    transition: color 0.2s ease;
+}
+
+.group-row-chevron svg {
+    width: 14px;
+    height: 14px;
+    fill: currentColor;
+    transition: transform 0.3s cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+.group-row.is-expanded .group-row-chevron svg {
+    transform: rotate(180deg);
+}
+
+.group-row.is-expanded .group-row-chevron {
+    color: var(--accent-primary);
+}
+
+.group-row-children {
+    display: grid;
+    grid-template-rows: 0fr;
+    transition: grid-template-rows 0.38s cubic-bezier(0.32, 0.72, 0, 1);
+    will-change: grid-template-rows;
+    /* promote to GPU layer for smooth animation */
+}
+
+.group-row-children.is-open {
+    grid-template-rows: 1fr;
+}
+
+/* Inner wrapper: overflow:hidden + min-height:0 are REQUIRED for the 0fr trick */
+/* The left padding + ::before bridges the indicator line up to the header */
+.group-row-children-inner {
+    overflow: hidden;
+    min-height: 0;
+    position: relative;
+    contain: content;
+    opacity: 0;
+    transform: translateY(-4px);
+    transition: opacity 0.3s ease, transform 0.3s ease;
+}
+
+.group-row-children.is-open .group-row-children-inner {
+    opacity: 1;
+    transform: translateY(0);
+}
+
+/* Draws the vertical connector from the header bottom down to the first child's indicator */
+.group-row-children-inner::before {
+    content: '';
+    position: absolute;
+    /* Shifted 4px right from previous center: 5px + 4px = 9px */
+    left: 9px;
+    top: 0;
+    height: 18px;
+    /* Slightly taller than 16px to ensure it overlaps the first child's line at 0 */
+    width: 2px;
+    background: var(--bg-quaternary);
+    border-radius: 1px;
+}
+
+/* ---- Child Row (hierarchy wrapper) ---- */
+.group-child-row {
+    display: flex;
+    align-items: stretch;
+    gap: 0;
+    /* Symmetric padding ensures the flex-stretched indicator connects seamlessly between rows */
+    padding: 6px 16px 6px 12px;
+    position: relative;
+    contain: layout style paint;
+}
+
+.group-child-row:first-child {
+    padding-top: 16px;
+    /* Increased top padding for the first item */
+}
+
+.group-child-row:last-child {
+    padding-bottom: 16px;
+}
+
+/* Vertical line: placed on the row to span the full height (including padding) so rows connect */
+.group-child-row::before {
+    content: '';
+    position: absolute;
+    /* Shifted 4px right: 9px */
+    left: 9px;
+    top: 0;
+    bottom: 0;
+    width: 2px;
+    background: var(--bg-quaternary);
+    border-radius: 1px;
+    z-index: 1;
+}
+
+/* Last child: vertical line terminates at the horizontal tick */
+.group-child-row:last-child::before {
+    bottom: calc(100% - 18px);
+    /* 6px top padding + 12px offset to reach card center */
+}
+
+/* Special Case: Only-child groups (both first and last) */
+/* Must account for the increased 16px top padding (16 + 12 = 28px) */
+.group-child-row:first-child:last-child::before {
+    bottom: calc(100% - 28px);
+}
+
+/* Vertical hierarchy container (now just handles the horizontal tick) */
+.group-child-indicator {
+    width: 8px;
+    min-width: 8px;
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    flex-shrink: 0;
+}
+
+/* Horizontal connector tick */
+.group-child-indicator::after {
+    content: '';
+    position: absolute;
+    /* Line is at 9px. Indicator starts at 12px. 9 - 12 = -3px. */
+    left: -3px;
+    top: 12px;
+    width: 12px;
+    height: 2px;
+    background: var(--bg-quaternary);
+    border-radius: 1px;
+}
+
+/* Child list-box: relative, not absolute, smaller visual weight */
+.list-box--group-child {
+    position: relative !important;
+    flex: 1;
+    height: var(--list-item-height);
+    /* Override the absolute-positioned defaults */
+    left: auto !important;
+    right: auto !important;
+    top: auto !important;
+    border-radius: calc(var(--border-radius) - 2px);
+    opacity: 0.92;
+    transition: opacity var(--transition), box-shadow var(--transition), transform 0.2s ease;
+    transform: translateZ(0);
+    /* each item on its own layer */
+    backface-visibility: hidden;
+    margin-bottom: 0 !important;
+    /* fix uneven bottom gap caused by standard list margin */
+}
+
+.list-box--group-child:hover {
+    opacity: 1;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
 }

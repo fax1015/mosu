@@ -382,7 +382,8 @@ let settings = {
     embedShowTodoList: true,
     embedShowCompletedList: true,
     embedShowProgressStats: true,
-    embedLastSynced: null
+    embedLastSynced: null,
+    groupMapsBySong: false
 };
 
 // Returns the mapper name that should be used for backend operations.
@@ -963,6 +964,32 @@ const processCoverLoadQueue = async () => {
             await Promise.all(batch.map(async ({ itemId, coverPath }) => {
                 const queueKey = `${itemId}::${coverPath}`;
                 try {
+                    // Handle group header covers (itemId starts with 'group||')
+                    if (itemId && itemId.startsWith('group||')) {
+                        let coverUrl = '';
+                        if (window.beatmapApi?.convertFileSrc) {
+                            coverUrl = window.beatmapApi.convertFileSrc(coverPath);
+                        } else if (window.beatmapApi?.readImage) {
+                            coverUrl = await window.beatmapApi.readImage(coverPath);
+                        }
+                        if (coverUrl) {
+                            // Find the group row and update its cover img
+                            const groupKey = itemId.slice('group||'.length);
+                            const groupEl = document.querySelector(`[data-group-key="${CSS.escape(groupKey)}"]`);
+                            if (groupEl) {
+                                const img = groupEl.querySelector('.group-row-cover img');
+                                if (img) {
+                                    img.src = coverUrl;
+                                    img.classList.remove('list-img--placeholder');
+                                }
+                            }
+                            // Also update representative beatmap item
+                            const repItem = beatmapItems.find(i => i.coverPath === coverPath);
+                            if (repItem) repItem.coverUrl = coverUrl;
+                        }
+                        return;
+                    }
+
                     const item = beatmapItems.find(i => i.id === itemId);
                     if (!item || item.coverPath !== coverPath) {
                         return;
@@ -1000,6 +1027,7 @@ const processCoverLoadQueue = async () => {
         isProcessingCoverQueue = false;
     }
 };
+
 
 const scheduleCoverLoad = (itemId, coverPath) => {
     if (!itemId || !coverPath) return;
@@ -1600,6 +1628,8 @@ const syncVirtualList = () => {
     const container = document.querySelector('#listContainer');
     if (!container) return;
 
+    // Don't run the virtual list logic in grouped mode — groups use flow layout
+    if (container.classList.contains('view-grouped')) return;
     const scrollTop = window.scrollY;
     const windowHeight = window.innerHeight;
     const rect = container.getBoundingClientRect();
@@ -1655,6 +1685,273 @@ const renderBeatmapList = (listContainer, items) => {
     listContainer.style.height = `${totalHeight}px`;
     listContainer.innerHTML = ''; // Fresh state
     syncVirtualList();
+};
+
+// ============================================================
+// Grouped-by-song rendering
+// ============================================================
+
+// Persists which groups are expanded (keyed by song title+artist)
+const groupedExpandedKeys = new Set();
+
+/**
+ * Returns a stable key for a song group based on the first map in the group.
+ */
+const getGroupKey = (item) => `${(item.artistUnicode || item.artist || '').toLowerCase()}||${(item.titleUnicode || item.title || '').toLowerCase()}`;
+
+/**
+ * Groups an array of beatmap items by song (artist + title).
+ * Returns an ordered array of { key, items[] }.
+ */
+const groupItemsBySong = (items) => {
+    const map = new Map();
+    const order = [];
+    for (const item of items) {
+        const key = getGroupKey(item);
+        if (!map.has(key)) {
+            map.set(key, []);
+            order.push(key);
+        }
+        map.get(key).push(item);
+    }
+    return order.map(key => ({ key, items: map.get(key) }));
+};
+
+/**
+ * Builds an individual "child" row for an expanded group.
+ * It reuses buildListItem but wraps it with a hierarchy indicator.
+ */
+const buildGroupChildRow = (item, index) => {
+    const wrapper = document.createElement('div');
+    wrapper.classList.add('group-child-row');
+
+    const indicator = document.createElement('div');
+    indicator.classList.add('group-child-indicator');
+
+    const inner = buildListItem(item, index);
+    inner.classList.add('list-box--group-child');
+
+    wrapper.appendChild(indicator);
+    wrapper.appendChild(inner);
+
+    return wrapper;
+};
+
+/**
+ * Builds the collapsed group header row shown when groupMapsBySong is enabled.
+ * Uses CSS Grid (grid-template-rows: 0fr → 1fr) for the expand animation —
+ * no JS height measurements, no race conditions.
+ */
+const buildGroupHeaderRow = (group, groupIndex) => {
+    const { key, items } = group;
+    const rep = items[0];
+    const isExpanded = groupedExpandedKeys.has(key);
+    const normalized = normalizeMetadata(rep);
+
+    const groupEl = document.createElement('div');
+    groupEl.classList.add('group-row');
+    groupEl.dataset.groupKey = key;
+    if (isExpanded) groupEl.classList.add('is-expanded');
+
+    // ---- Header (always visible, clickable to toggle) ----
+    const header = document.createElement('div');
+    header.classList.add('group-row-header');
+
+    // Cover image (left)
+    const imgWrap = document.createElement('div');
+    imgWrap.classList.add('group-row-cover');
+    const img = document.createElement('img');
+    img.alt = `${normalized.artistUnicode} - ${normalized.titleUnicode}`;
+    img.loading = 'lazy';
+    img.decoding = 'async';
+    if (normalized.coverUrl) {
+        img.src = normalized.coverUrl;
+        img.onerror = () => { img.onerror = null; img.src = './assets/placeholder.png'; img.classList.add('list-img--placeholder'); };
+    } else {
+        img.src = './assets/placeholder.png';
+        img.classList.add('list-img--placeholder');
+        if (normalized.coverPath) {
+            const queueKey = `group||${key}::${normalized.coverPath}`;
+            if (!queuedCoverPaths.has(queueKey)) {
+                queuedCoverPaths.add(queueKey);
+                coverLoadQueue.push({ itemId: `group||${key}`, coverPath: normalized.coverPath });
+                processCoverLoadQueue();
+            }
+            groupEl._coverImg = img;
+        }
+    }
+    imgWrap.appendChild(img);
+    const overlay = document.createElement('div');
+    overlay.classList.add('group-row-cover-overlay');
+    imgWrap.appendChild(overlay);
+
+    // Center: song info
+    const info = document.createElement('div');
+    info.classList.add('group-row-info');
+
+    const titleEl = document.createElement('h3');
+    titleEl.classList.add('group-row-title');
+    titleEl.textContent = `${normalized.artistUnicode} - ${normalized.titleUnicode}`;
+    info.appendChild(titleEl);
+
+    const countEl = document.createElement('span');
+    countEl.classList.add('group-row-count');
+    countEl.textContent = `${items.length} difficult${items.length === 1 ? 'y' : 'ies'}`;
+    info.appendChild(countEl);
+
+    // Right: version carousel
+    const carousel = document.createElement('div');
+    carousel.classList.add('group-row-carousel');
+    // Chips are built later to handle circular references if needed, 
+    // but here we just need to ensure the click handler can find the container.
+
+    // Expand/collapse chevron
+    const chevronWrap = document.createElement('div');
+    chevronWrap.classList.add('group-row-chevron');
+    const chevronSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    chevronSvg.setAttribute('viewBox', '0 0 448 512');
+    const chevronPath = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    chevronPath.setAttribute('d', 'M201.4 406.6c12.5 12.5 32.8 12.5 45.3 0l192-192c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0L224 338.7 54.6 169.4c-12.5-12.5-32.8-12.5-45.3 0s-12.5 32.8 0 45.3l192 192z');
+    chevronSvg.appendChild(chevronPath);
+    chevronWrap.appendChild(chevronSvg);
+
+    // Wrap cover + info so text can overlay the image
+    const coverSection = document.createElement('div');
+    coverSection.classList.add('group-row-cover-section');
+    coverSection.appendChild(imgWrap);
+    coverSection.appendChild(info);
+
+    header.appendChild(coverSection);
+    header.appendChild(carousel);
+    header.appendChild(chevronWrap);
+
+    // ---- Children (CSS Grid animated: 0fr → 1fr, zero JS measurements needed) ----
+    const childrenContainer = document.createElement('div');
+    childrenContainer.classList.add('group-row-children');
+    if (isExpanded) childrenContainer.classList.add('is-open');
+
+    // Inner wrapper: overflow:hidden + min-height:0 enables the grid trick
+    const childrenInner = document.createElement('div');
+    childrenInner.classList.add('group-row-children-inner');
+    childrenContainer.appendChild(childrenInner);
+
+    // Helper: build child items once and cache them in childrenInner
+    const ensureChildrenBuilt = () => {
+        if (childrenInner.children.length > 0) return; // already built
+        items.forEach((item, i) => {
+            childrenInner.appendChild(buildGroupChildRow(item, i));
+        });
+        childrenInner.querySelectorAll('.list-box').forEach(box => {
+            applyTimelineToBox(box, Number(box.dataset.renderIndex || 0));
+        });
+    };
+
+    // If starting expanded, build immediately
+    if (isExpanded) ensureChildrenBuilt();
+
+    // ---- Toggle logic (race-condition-free) ----
+    let isAnimating = false;
+    let animSafetyTimer = null;
+
+    header.addEventListener('click', () => {
+        if (isAnimating) return;
+
+        const wasExpanded = groupedExpandedKeys.has(key);
+        isAnimating = true;
+
+        // Release the lock once the CSS transition ends (or after a safety timeout)
+        const release = () => {
+            isAnimating = false;
+            if (animSafetyTimer) { clearTimeout(animSafetyTimer); animSafetyTimer = null; }
+        };
+        childrenContainer.addEventListener('transitionend', release, { once: true });
+        animSafetyTimer = setTimeout(release, 600); // fallback if transitionend doesn't fire
+
+        if (wasExpanded) {
+            groupedExpandedKeys.delete(key);
+            groupEl.classList.remove('is-expanded');
+            childrenContainer.classList.remove('is-open');
+            // Children stay in DOM (hidden by 0fr grid row) — re-opening is instant
+        } else {
+            groupedExpandedKeys.add(key);
+            groupEl.classList.add('is-expanded');
+            ensureChildrenBuilt(); // lazy build on first expand
+
+            // Wait for DOM to settle before animating to avoid layout thrash
+            requestAnimationFrame(() => {
+                requestAnimationFrame(() => {
+                    childrenContainer.classList.add('is-open');
+                });
+            });
+        }
+    });
+
+    // ---- Build Chips (placed here to safely reference childrenInner in closure) ----
+    items.forEach(item => {
+        const chip = document.createElement('span');
+        chip.classList.add('group-row-version-chip');
+        chip.textContent = item.version || 'Unknown';
+        chip.title = item.version || 'Unknown';
+        chip.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const wasExpanded = groupedExpandedKeys.has(key);
+            if (!wasExpanded) {
+                header.click();
+            }
+
+            // Scroll to the item with a slight delay to allow expansion logic/DOM to catch up
+            setTimeout(() => {
+                const target = childrenInner.querySelector(`[data-item-id="${item.id}"]`);
+                if (target) {
+                    target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+
+                    // Simple distance-based delay calculation
+                    const rect = target.getBoundingClientRect();
+                    const distance = Math.abs(rect.top - (window.innerHeight / 2));
+                    // Base 350ms + roughly 0.2ms per pixel, capped at 1.2s
+                    const highlightDelay = Math.min(1200, 350 + (distance / 5));
+
+                    setTimeout(() => {
+                        target.style.transition = 'transform 0.4s cubic-bezier(0.34, 1.56, 0.64, 1), outline 0.3s ease';
+                        target.style.transform = 'scale(1.01)';
+                        target.style.outline = '2px solid var(--accent-primary)';
+                        target.style.outlineOffset = '0px';
+                        target.style.zIndex = '100';
+
+                        setTimeout(() => {
+                            target.style.transform = '';
+                            target.style.outline = '';
+                            target.style.outlineOffset = '';
+                            target.style.zIndex = '';
+                        }, 1200);
+                    }, highlightDelay);
+                }
+            }, wasExpanded ? 50 : 500);
+        });
+        carousel.appendChild(chip);
+    });
+
+    groupEl.appendChild(header);
+    groupEl.appendChild(childrenContainer);
+
+    return groupEl;
+};
+
+/**
+ * Renders the grouped layout (non-virtual, flow layout).
+ */
+const renderGroupedView = (listContainer, groups) => {
+    listContainer.style.height = ''; // Let content determine height for grouped mode
+    listContainer.innerHTML = '';
+
+    const fragment = document.createDocumentFragment();
+    groups.forEach((group, i) => {
+        const el = buildGroupHeaderRow(group, i);
+        fragment.appendChild(el);
+    });
+    listContainer.appendChild(fragment);
+
+    updateEmptyState(listContainer);
 };
 
 const setLoading = (isLoading) => {
@@ -2040,7 +2337,14 @@ const renderFromState = () => {
     listContainer.className = '';
     listContainer.classList.add(`view-${viewMode}`);
 
-    renderBeatmapList(listContainer, itemsToRender);
+    // Use grouped view only on 'all' tab when the setting is enabled
+    if (settings.groupMapsBySong && viewMode === 'all') {
+        listContainer.classList.add('view-grouped');
+        const groups = groupItemsBySong(itemsToRender);
+        renderGroupedView(listContainer, groups);
+    } else {
+        renderBeatmapList(listContainer, itemsToRender);
+    }
 };
 
 const serializeHighlights = (ranges) => ranges.map((range) => ([
@@ -3341,6 +3645,9 @@ const init = async () => {
         if (embedShowTodoList) embedShowTodoList.checked = settings.embedShowTodoList;
         if (embedShowCompletedList) embedShowCompletedList.checked = settings.embedShowCompletedList;
         if (embedShowProgressStats) embedShowProgressStats.checked = settings.embedShowProgressStats;
+
+        const groupMapsBySongEl = document.querySelector('#groupMapsBySong');
+        if (groupMapsBySongEl) groupMapsBySongEl.checked = !!settings.groupMapsBySong;
     };
 
     // Tab Listeners
@@ -3681,7 +3988,18 @@ const init = async () => {
         }
     });
 
-    // Volume Slider Listener
+    // Group Maps By Song Toggle
+    const groupMapsBySongEl = document.getElementById('groupMapsBySong');
+    if (groupMapsBySongEl) {
+        groupMapsBySongEl.addEventListener('change', (e) => {
+            settings.groupMapsBySong = e.target.checked;
+            saveSettings();
+            // Clear expanded state so old groups don't persist after toggle
+            groupedExpandedKeys.clear();
+            renderFromState();
+        });
+    }
+
     const volumeSlider = document.getElementById('previewVolume');
     const volumeValueText = document.getElementById('volumeValue');
     if (volumeSlider) {

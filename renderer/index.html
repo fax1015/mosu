@@ -241,18 +241,6 @@
                 </div>
                 <div class="settings-item">
                     <div class="settings-info">
-                        <p class="settings-label">Hide guest difficulties in your own mapsets</p>
-                        <p class="settings-description">When enabled, hide selected mapper's maps with difficulty
-                            names
-                            that contain "'s" (e.g., "guest's Extra"). May not be 100% accurate.</p>
-                    </div>
-                    <label class="switch">
-                        <input type="checkbox" id="ignoreGuestDifficulties">
-                        <span class="slider"></span>
-                    </label>
-                </div>
-                <div class="settings-item">
-                    <div class="settings-info">
                         <p class="settings-label">Auto-rescan by mapper on app startup</p>
                         <p class="settings-description">Automatically scan for new maps from a specific mapper.</p>
                     </div>
@@ -267,6 +255,18 @@
                         <p class="settings-description">The mapper name used for scanning and refreshing.</p>
                     </div>
                     <input type="text" class="control-input" id="rescanMapperName" placeholder="Mapper name...">
+                </div>
+                <div class="settings-item is-indented">
+                    <div class="settings-info">
+                        <p class="settings-label">Hide guest difficulties in your own mapsets</p>
+                        <p class="settings-description">When enabled, hide selected mapper's maps with difficulty
+                            names
+                            that contain "'s" (e.g., "guest's Extra"). May not be 100% accurate.</p>
+                    </div>
+                    <label class="switch">
+                        <input type="checkbox" id="ignoreGuestDifficulties">
+                        <span class="slider"></span>
+                    </label>
                 </div>
                 <div class="settings-item">
                     <div class="settings-info">
@@ -298,6 +298,17 @@
                         <input type="range" id="listItemHeightSlider" min="170" max="300" step="10" value="240">
                         <span id="listItemHeightValue">240px</span>
                     </div>
+                </div>
+                <div class="settings-item">
+                    <div class="settings-info">
+                        <p class="settings-label">Group maps by song</p>
+                        <p class="settings-description">Group multiple difficulties of the same song into a collapsible
+                            group in the All tab.</p>
+                    </div>
+                    <label class="switch">
+                        <input type="checkbox" id="groupMapsBySong">
+                        <span class="slider"></span>
+                    </label>
                 </div>
             </div>
             <div class="settings-section">
@@ -432,21 +443,16 @@
                 <span class="changelog-version-tag" id="changelogVersionTag">v0.0.0</span>
             </div>
             <ul class="changelog-list">
-                <h4>major changes</h4>
-                <li><strong>migrated to tauri</strong> — smaller bundle, rust as backend (based)</li>
-                <li><strong>embed sync</strong> — sync your embed data to an external site (experimental)</li>
-                <br>
-                <h4>minor changes</h4>
-                <li><strong>near-instant audio preview</strong> — optimized audio playback</li>
-                <li><strong>tweaked audio analysis</strong> — 100x faster (idk how much exactly but it's soooooo much
-                    better) by reading only the necessary metadata headers</li>
-                <li><strong>better usage of cached data</strong> — removed need to reload data every time you open the
-                    app</li>
-                <li><strong>smoother ui</strong> — reduced jank, fixed memory usage spikes</li>
-                <li><strong>changelog popup</strong> — see what's new after each update (woah)</li>
-                <br>
-                <h4>bug fixes</h4>
-                <li><strong>todo list rearranging</strong> — now actually works</li>
+                <h4>grouped mapsets</h4>
+                <li>- difficulties from the same mapset can now be grouped into
+                    expandable
+                    sections (rejoice!!)
+                    <br><br>
+                    - click on any difficulty in the group header to scroll directly to that
+                    difficulty
+                    <br><br>
+                    - you can toggle it on and off in the settings
+                </li>
             </ul>
         </div>
     </dialog>
