@@ -5,7 +5,7 @@ built with tauri
 
 ### prerequisites
 - Node.js
-- Rust toolchain (`rustup` + `cargo`)
+- rust toolchain (`rustup` + `cargo`)
 
 ### commands
 - `npm run dev` - run in development mode

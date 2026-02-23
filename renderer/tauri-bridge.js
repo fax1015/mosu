@@ -70,6 +70,7 @@
     showItemInFolder: (filePath) => invoke('show_item_in_folder', { filePath }),
     convertFileSrc: (filePath) => convertFileSrc(filePath),
     getAudioDuration: (filePath) => invoke('get_audio_duration', { filePath }),
+    calculateStarRating: (filePath) => invoke('calculate_star_rating', { filePath }),
   };
 
   window.appInfo = window.appInfo || {

@@ -1,9 +1,48 @@
 const STORAGE_KEY = 'beatmapItemsV1';
 const SETTINGS_STORAGE_KEY = 'mapTrackerSettingsV1';
 const AUDIO_ANALYSIS_STATE_KEY = 'audioAnalysisStateV1';
+const STAR_RATING_STATE_KEY = 'starRatingStateV1';
 const STORAGE_VERSION = 1;
 
-// Custom Tooltip System
+const getStarRatingColor = (rating) => {
+    const r = Math.max(0, Math.min(15, rating));
+
+    // Define color stops: [starRating, r, g, b]
+    // Offset by 0.3 larger than original thresholds
+    const colorStops = [
+        [0.3, 79, 192, 255],    // #4fc0ff - light blue
+        [2.3, 124, 255, 79],    // #7cff4f - green
+        [3.0, 246, 240, 92],    // #f6f05c - yellow
+        [4.3, 255, 78, 111],    // #ff4e6f - red/pink
+        [5.6, 198, 69, 184],    // #c645b8 - purple
+        [6.8, 101, 99, 222],    // #6563de - blue/purple
+        [10.3, 0, 0, 0],        // black
+    ];
+
+    // Find the two stops to interpolate between
+    let lower = colorStops[0];
+    let upper = colorStops[colorStops.length - 1];
+
+    for (let i = 0; i < colorStops.length - 1; i++) {
+        if (r >= colorStops[i][0] && r <= colorStops[i + 1][0]) {
+            lower = colorStops[i];
+            upper = colorStops[i + 1];
+            break;
+        }
+    }
+
+    // Calculate interpolation factor
+    const range = upper[0] - lower[0];
+    const t = range === 0 ? 0 : (r - lower[0]) / range;
+
+    // Interpolate RGB values
+    const finalR = Math.round(lower[1] + (upper[1] - lower[1]) * t);
+    const finalG = Math.round(lower[2] + (upper[2] - lower[2]) * t);
+    const finalB = Math.round(lower[3] + (upper[3] - lower[3]) * t);
+
+    return `rgb(${finalR}, ${finalG}, ${finalB})`;
+};
+
 const TooltipManager = {
     element: null,
     timeout: null,
@@ -166,6 +205,10 @@ let doneIds = [];
 let viewMode = 'all';
 let sortState = { mode: 'dateAdded', direction: 'desc' };
 let searchQuery = '';
+let srFilter = { min: 0, max: 10 };
+let pendingTabRenderRaf = 0;
+let groupedRenderPassToken = 0;
+let isWindowResizeInProgress = false;
 
 // Auto-scroll state for dragging
 let autoScrollTimer = null;
@@ -369,7 +412,7 @@ let settings = {
     ignoreStartAndBreaks: false,
     ignoreGuestDifficulties: false,
     volume: 0.5,
-    listItemHeight: 240,
+    listItemHeight: 170,
     // First-run setup state
     initialSetupDone: false,
     // 'all' | 'mapper' | null - remembers user's first-run import choice
@@ -383,7 +426,7 @@ let settings = {
     embedShowCompletedList: true,
     embedShowProgressStats: true,
     embedLastSynced: null,
-    groupMapsBySong: false
+    groupMapsBySong: true
 };
 
 // Returns the mapper name that should be used for backend operations.
@@ -427,12 +470,19 @@ const parseHighlights = (raw) => {
 };
 
 const renderTimeline = (timeline, ranges) => {
-    if (!(timeline instanceof HTMLCanvasElement)) return;
+    if (!(timeline instanceof HTMLCanvasElement)) return false;
 
     const ctx = timeline.getContext('2d');
+    if (!ctx) return false;
     const dpr = window.devicePixelRatio || 1;
     const width = timeline.clientWidth;
     const height = timeline.clientHeight;
+
+    // Timeline can briefly report 0x0 while layout is settling (or tab regains focus).
+    // Defer the draw in that case and retry on the next frame.
+    if (width <= 0 || height <= 0) {
+        return false;
+    }
 
     // Set internal resolution for crispness
     if (timeline.width !== width * dpr || timeline.height !== height * dpr) {
@@ -467,6 +517,8 @@ const renderTimeline = (timeline, ranges) => {
             ctx.fillRect(x, 0, w, height);
         }
     });
+
+    return true;
 };
 
 
@@ -493,10 +545,12 @@ const animateRemoveElement = (element) => {
     setTimeout(onDone, 600);
 };
 
-let VIRTUAL_ITEM_HEIGHT = 252; // 240px + 12px gap
+let VIRTUAL_ITEM_HEIGHT = 182; // 170px + 12px gap
 let itemsToRender = [];
+let cachedContainerTop = 0; // Cached once per full render; avoids BoundingClientRect on every scroll/sync
+const MAX_TIMELINE_RENDER_RETRIES = 8;
 
-const applyTimelineToBox = (box, index) => {
+const applyTimelineToBox = (box, itemOrIndex) => {
     const timeline = box.querySelector('.list-timeline');
     if (!timeline) return;
 
@@ -507,19 +561,49 @@ const applyTimelineToBox = (box, index) => {
     if (isDone) {
         ranges = [{ start: 0, end: 1, type: 'object' }];
     } else {
-        const item = itemsToRender[index];
+        // Find the item properly. If itemOrIndex is already an object, use it.
+        // Otherwise, try to find it in itemsToRender via index, or fallback to searching by ID.
+        let item = (typeof itemOrIndex === 'object') ? itemOrIndex : null;
+
+        if (!item) {
+            const index = Number(itemOrIndex);
+            // Verify if the item at itemsToRender[index] matches the box we're updating
+            if (!isNaN(index) && itemsToRender[index]?.id === itemId) {
+                item = itemsToRender[index];
+            } else {
+                // If index is wrong (common in grouped mode) or missing, find by ID
+                item = itemsToRender.find(i => i.id === itemId) ||
+                    beatmapItems.find(i => i.id === itemId);
+            }
+        }
+
         ranges = item?.highlights || [];
 
-        const hasProgress = Number(item?.progress) > 0;
+        const hasProgress = Number(item?.progress || box.dataset.progress || 0) > 0;
         if (!ranges.length && hasProgress) {
-            const fallback = index % 2 === 0 ? '0.1-0.18,0.42-0.52,0.76-0.96' : '0.15-0.22,0.58-0.72';
+            // Use a stable index for fallback visual variety (the box's render index)
+            const fallbackIndex = Number(box.dataset.renderIndex || 0);
+            const fallback = fallbackIndex % 2 === 0 ? '0.1-0.18,0.42-0.52,0.76-0.96' : '0.15-0.22,0.58-0.72';
             ranges = parseHighlights(fallback);
         } else if (!hasProgress) {
             ranges = [];
         }
     }
 
-    renderTimeline(timeline, ranges);
+    const didRender = renderTimeline(timeline, ranges);
+    if (didRender) {
+        timeline.dataset.renderRetryCount = '0';
+        return;
+    }
+
+    const retryCount = Number(timeline.dataset.renderRetryCount || 0);
+    if (retryCount >= MAX_TIMELINE_RENDER_RETRIES) return;
+
+    timeline.dataset.renderRetryCount = String(retryCount + 1);
+    requestAnimationFrame(() => {
+        if (!box.isConnected) return;
+        applyTimelineToBox(box, itemOrIndex);
+    });
 };
 
 
@@ -946,7 +1030,47 @@ const normalizeMetadata = (metadata) => ({
     id: metadata?.id ?? '',
     deadline: metadata?.deadline ?? null,
     targetStarRating: metadata?.targetStarRating ?? null,
+    starRating: (typeof metadata?.starRating === 'number' && Number.isFinite(metadata.starRating) && metadata.starRating > 0)
+        ? metadata.starRating
+        : null,
+    notes: metadata?.notes || '',
 });
+
+const isValidStarRating = (value) => typeof value === 'number' && Number.isFinite(value) && value > 0;
+
+const isStarRatingMissing = (value) => !isValidStarRating(value);
+
+const applyCalculatedStarTagState = (tagElement, rating) => {
+    if (!tagElement) return;
+
+    const ring = tagElement.querySelector('.meta-tag-star-ring') || tagElement.querySelector('path');
+    const core = tagElement.querySelector('.meta-tag-star-core') || tagElement.querySelector('circle');
+    const valueEl = tagElement.querySelector('.meta-tag-star-value') || tagElement.querySelector('span');
+
+    if (isValidStarRating(rating)) {
+        const srColor = getStarRatingColor(rating);
+        const srRgb = srColor.startsWith('rgb(') ? srColor.slice(4, -1) : '255, 255, 255';
+
+        if (ring) ring.style.fill = srColor;
+        if (core) core.style.fill = srColor;
+        if (valueEl) valueEl.textContent = rating.toFixed(2);
+
+        tagElement.style.setProperty('border-color', `rgba(${srRgb}, 0.3)`, 'important');
+        tagElement.style.backgroundColor = `rgba(${srRgb}, 0.3)`;
+        tagElement.dataset.tooltip = 'Calculated Star Rating';
+        tagElement.classList.remove('is-pending');
+        return;
+    }
+
+    if (ring) ring.style.fill = 'rgb(148, 143, 163)';
+    if (core) core.style.fill = 'rgb(148, 143, 163)';
+    if (valueEl) valueEl.textContent = '--';
+
+    tagElement.style.setProperty('border-color', 'rgba(148, 143, 163, 0.35)', 'important');
+    tagElement.style.backgroundColor = 'rgba(148, 143, 163, 0.08)';
+    tagElement.dataset.tooltip = 'Calculated Star Rating (pending)';
+    tagElement.classList.add('is-pending');
+};
 
 const coverLoadQueue = [];
 const queuedCoverPaths = new Set();
@@ -1042,6 +1166,9 @@ const scheduleCoverLoad = (itemId, coverPath) => {
 const buildListItem = (metadata, index) => {
     const normalized = normalizeMetadata(metadata);
     const isDone = doneIds.includes(normalized.id);
+    const isTodoTab = viewMode === 'todo';
+    const isCompletedTab = viewMode === 'completed';
+    const isAllTab = viewMode === 'all';
     const listBox = document.createElement('div');
     listBox.classList.add('list-box');
     listBox.style.setProperty('--i', index);
@@ -1105,6 +1232,33 @@ const buildListItem = (metadata, index) => {
     versionTag.textContent = normalized.version;
     versionTag.dataset.tooltip = 'Difficulty Name';
 
+    const calculatedSrTag = document.createElement('span');
+    calculatedSrTag.classList.add('meta-tag', 'meta-tag--star-rating', 'meta-tag--calculated-sr', 'meta-tag--cover-star');
+    if (isTodoTab) {
+        calculatedSrTag.classList.add('meta-tag--cover-star-offset');
+    }
+    const srVal = normalized.starRating;
+
+    const calcStarIcon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    calcStarIcon.setAttribute('viewBox', '0 0 574 574');
+    calcStarIcon.classList.add('meta-tag-icon');
+    const calcStarPath = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    calcStarPath.classList.add('meta-tag-star-ring');
+    calcStarPath.setAttribute('d', 'M287,0C445.218,0 574,128.782 574,287C574,445.218 445.218,574 287,574C128.782,574 0,445.218 0,287C0,128.782 128.782,0 287,0ZM287,63C164.282,63 63,164.282 63,287C63,409.718 164.282,511 287,511C409.718,511 511,409.718 511,287C511,164.282 409.718,63 287,63Z');
+    calcStarIcon.appendChild(calcStarPath);
+    const calcInnerCircle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+    calcInnerCircle.classList.add('meta-tag-star-core');
+    calcInnerCircle.setAttribute('cx', '287');
+    calcInnerCircle.setAttribute('cy', '287');
+    calcInnerCircle.setAttribute('r', '121');
+    calcStarIcon.appendChild(calcInnerCircle);
+
+    const calcStarValue = document.createElement('span');
+    calcStarValue.classList.add('meta-tag-star-value');
+    calculatedSrTag.appendChild(calcStarIcon);
+    calculatedSrTag.appendChild(calcStarValue);
+    applyCalculatedStarTagState(calculatedSrTag, srVal);
+
     const beatmapLink = document.createElement('button');
     beatmapLink.type = 'button';
     beatmapLink.classList.add('beatmap-link');
@@ -1135,47 +1289,16 @@ const buildListItem = (metadata, index) => {
     meta.appendChild(versionTag);
 
     // Target star rating tag (always create, but hide if no value)
-    const getStarRatingColor = (rating) => {
-        const r = Math.max(0, Math.min(15, rating));
-
-        // Define color stops: [starRating, r, g, b]
-        // Offset by 0.3 larger than original thresholds
-        const colorStops = [
-            [0.3, 79, 192, 255],    // #4fc0ff - light blue
-            [2.3, 124, 255, 79],    // #7cff4f - green
-            [3.0, 246, 240, 92],    // #f6f05c - yellow
-            [4.3, 255, 78, 111],    // #ff4e6f - red/pink
-            [5.6, 198, 69, 184],    // #c645b8 - purple
-            [6.8, 101, 99, 222],    // #6563de - blue/purple
-            [10.3, 0, 0, 0],        // black
-        ];
-
-        // Find the two stops to interpolate between
-        let lower = colorStops[0];
-        let upper = colorStops[colorStops.length - 1];
-
-        for (let i = 0; i < colorStops.length - 1; i++) {
-            if (r >= colorStops[i][0] && r <= colorStops[i + 1][0]) {
-                lower = colorStops[i];
-                upper = colorStops[i + 1];
-                break;
-            }
-        }
-
-        // Calculate interpolation factor
-        const range = upper[0] - lower[0];
-        const t = range === 0 ? 0 : (r - lower[0]) / range;
-
-        // Interpolate RGB values
-        const finalR = Math.round(lower[1] + (upper[1] - lower[1]) * t);
-        const finalG = Math.round(lower[2] + (upper[2] - lower[2]) * t);
-        const finalB = Math.round(lower[3] + (upper[3] - lower[3]) * t);
-
-        return `rgb(${finalR}, ${finalG}, ${finalB})`;
-    };
 
     const starTag = document.createElement('span');
-    starTag.classList.add('meta-tag', 'meta-tag--star-rating');
+    starTag.classList.add('meta-tag', 'meta-tag--star-rating', 'meta-tag--target-sr', 'meta-tag--target-sr-cover');
+    if (isTodoTab) {
+        starTag.classList.add('meta-tag--target-sr-cover-offset');
+    }
+    // Hide target star rating chip in completed tab
+    if (isCompletedTab) {
+        starTag.style.display = 'none';
+    }
 
     const starIcon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
     starIcon.setAttribute('viewBox', '0 0 574 574');
@@ -1204,6 +1327,9 @@ const buildListItem = (metadata, index) => {
             starPath.style.fill = color;
             innerCircle.style.fill = color;
             starValue.textContent = rating.toFixed(1);
+            // Border color tied to star rating value
+            starTag.style.borderColor = `rgba(${color.slice(4, -1)}, 0.4)`;
+            starTag.style.backgroundColor = `rgba(${color.slice(4, -1)}, 0.3)`;
             starTag.style.display = '';
         } else {
             starTag.style.display = 'none';
@@ -1213,7 +1339,7 @@ const buildListItem = (metadata, index) => {
     // Initial state
     updateStarTag(normalized.targetStarRating);
     starTag.dataset.tooltip = 'Target Star Rating';
-    meta.appendChild(starTag);
+    details.appendChild(starTag);
 
     // Store reference for dynamic updates
     listBox._updateStarTag = updateStarTag;
@@ -1240,6 +1366,7 @@ const buildListItem = (metadata, index) => {
 
     details.appendChild(image);
     details.appendChild(actionLinks);
+    details.appendChild(calculatedSrTag);
     details.appendChild(title);
     details.appendChild(meta);
 
@@ -1297,10 +1424,6 @@ const buildListItem = (metadata, index) => {
     pinPath.setAttribute('d', 'M32 32C32 14.3 46.3 0 64 0L320 0c17.7 0 32 14.3 32 32s-14.3 32-32 32l-29 0 0 160c0 17.1 6.8 33.5 19 45.7l44.3 44.3c14.1 14.1 21.4 33.1 20.3 52.8s-12.7 37.7-30.8 45.6c-10.3 4.5-21.5 6.8-32.8 6.8l-85 0 0 128c0 17.7-14.3 32-32 32s-32-14.3-32-32l0-128-85 0c-11.3 0-22.5-2.3-32.8-6.8c-18.1-7.9-29.7-25.9-30.8-45.6s6.3-38.7 20.3-52.8L93 271.7c12.2-12.2 19-28.6 19-45.7l0-160-29 0c-17.7 0-32-14.3-32-32z');
     pinSvg.appendChild(pinPath);
     pinBtn.appendChild(pinSvg);
-
-    const isTodoTab = viewMode === 'todo';
-    const isCompletedTab = viewMode === 'completed';
-    const isAllTab = viewMode === 'all';
 
     if (isTodoTab) {
         pinBtn.classList.add('is-todo-tab');
@@ -1505,9 +1628,32 @@ const buildListItem = (metadata, index) => {
             }
         });
 
+        const expansionContent = document.createElement('div');
+        expansionContent.classList.add('expansion-content');
+
+        const notesContainer = document.createElement('div');
+        notesContainer.classList.add('notes-container');
+        const notesTextarea = document.createElement('textarea');
+        notesTextarea.classList.add('notes-textarea');
+        notesTextarea.placeholder = 'Add notes...';
+        notesTextarea.value = normalized.notes || '';
+        notesTextarea.onclick = (e) => e.stopPropagation();
+        notesTextarea.oninput = (e) => {
+            const itemIndex = beatmapItems.findIndex(i => i.id === normalized.id);
+            if (itemIndex !== -1) {
+                beatmapItems[itemIndex].notes = e.target.value;
+                scheduleSave();
+            }
+        };
+        notesContainer.appendChild(notesTextarea);
+        expansionContent.appendChild(notesContainer);
+
+        const controlsContainer = document.createElement('div');
+        controlsContainer.classList.add('expansion-controls');
+
         deadlineContainer.appendChild(deadlineLabel);
         deadlineContainer.appendChild(deadlinePicker);
-        expansionArea.appendChild(deadlineContainer);
+        controlsContainer.appendChild(deadlineContainer);
 
         // Target Star Rating Row
         const targetStarContainer = document.createElement('div');
@@ -1542,37 +1688,12 @@ const buildListItem = (metadata, index) => {
 
         targetStarContainer.appendChild(targetStarLabel);
         targetStarContainer.appendChild(targetStarInput);
-        expansionArea.appendChild(targetStarContainer);
+        controlsContainer.appendChild(targetStarContainer);
 
-        // Extra Actions Row
-        const extraActions = document.createElement('div');
-        extraActions.classList.add('extra-actions');
+        expansionContent.appendChild(controlsContainer);
+        expansionArea.appendChild(expansionContent);
 
-        // Open Website (if available)
-        if (normalized.beatmapSetID && normalized.beatmapSetID !== '-1' && normalized.beatmapSetID !== '0') {
-            const openWebBtn = document.createElement('button');
-            openWebBtn.type = 'button';
-            openWebBtn.classList.add('extra-action-btn');
-            openWebBtn.dataset.tooltip = 'Open Website';
-            openWebBtn.innerHTML = `
-                <svg viewBox="0 0 512 512"><path d="M320 0c-17.7 0-32 14.3-32 32s14.3 32 32 32l82.7 0-201.4 201.4c-12.5 12.5-12.5 32.8 0 45.3s32.8 12.5 45.3 0L448 109.3 448 192c0 17.7 14.3 32 32 32s32-14.3 32-32l0-160c0-17.7-14.3-32-32-32L320 0zM80 96C35.8 96 0 131.8 0 176L0 432c0 44.2 35.8 80 80 80l256 0c44.2 0 80-35.8 80-80l0-80c0-17.7-14.3-32-32-32s-32 14.3-32 32l0 80c0 8.8-7.2 16-16 16L80 448c-8.8 0-16-7.2-16-16l0-256c0-8.8 7.2-16 16-16l80 0c17.7 0 32-14.3 32-32s-14.3-32-32-32L80 96z"/></svg>
-                <span>Open Website</span>
-            `;
-            openWebBtn.onclick = (e) => {
-                e.stopPropagation();
-                const bID = normalized.beatmapSetID;
-                const isUrl = String(bID).startsWith('http');
-                const url = isUrl ? bID : `https://osu.ppy.sh/beatmapsets/${bID}`;
-                if (window.appInfo?.openExternalUrl) {
-                    window.appInfo.openExternalUrl(url);
-                } else {
-                    window.open(url, '_blank');
-                }
-            };
-            extraActions.appendChild(openWebBtn);
-        }
 
-        expansionArea.appendChild(extraActions);
 
 
     }
@@ -1623,6 +1744,37 @@ const buildListItem = (metadata, index) => {
 };
 
 const batchRenderTimelines = [];
+let batchRenderTimelinesRAF = 0;
+const TIMELINE_BATCH_RENDER_SIZE = 5;
+
+const flushTimelineBatchRender = () => {
+    batchRenderTimelinesRAF = 0;
+    if (isWindowResizeInProgress) return;
+
+    let processed = 0;
+    while (batchRenderTimelines.length > 0 && processed < TIMELINE_BATCH_RENDER_SIZE) {
+        const job = batchRenderTimelines.shift();
+        if (!job?.el || !job.el.isConnected) continue;
+        applyTimelineToBox(job.el, job.index);
+        processed += 1;
+    }
+
+    if (batchRenderTimelines.length > 0) {
+        batchRenderTimelinesRAF = requestAnimationFrame(flushTimelineBatchRender);
+    }
+};
+
+const scheduleTimelineBatchRender = () => {
+    if (batchRenderTimelinesRAF || isWindowResizeInProgress) return;
+    batchRenderTimelinesRAF = requestAnimationFrame(flushTimelineBatchRender);
+};
+
+const cancelTimelineBatchRender = () => {
+    batchRenderTimelines.length = 0;
+    if (!batchRenderTimelinesRAF) return;
+    cancelAnimationFrame(batchRenderTimelinesRAF);
+    batchRenderTimelinesRAF = 0;
+};
 
 const syncVirtualList = () => {
     const container = document.querySelector('#listContainer');
@@ -1632,8 +1784,9 @@ const syncVirtualList = () => {
     if (container.classList.contains('view-grouped')) return;
     const scrollTop = window.scrollY;
     const windowHeight = window.innerHeight;
-    const rect = container.getBoundingClientRect();
-    const containerTop = rect.top + scrollTop;
+    // Use cached containerTop — recomputed only on full re-renders (renderBeatmapList).
+    // Avoids header-wrap at narrow widths causing churn on every resize/scroll tick.
+    const containerTop = cachedContainerTop;
 
     // Calculate which items are in view
     const startIndex = Math.max(0, Math.floor((scrollTop - containerTop) / VIRTUAL_ITEM_HEIGHT) - 5);
@@ -1670,34 +1823,73 @@ const syncVirtualList = () => {
     }
     container.appendChild(fragment);
 
-    // Process timeline batch
-    while (batchRenderTimelines.length > 0) {
-        const { el, index } = batchRenderTimelines.shift();
-        applyTimelineToBox(el, index);
-    }
+    // Process timeline rendering in small RAF batches for smoother scrolling/resizing.
+    scheduleTimelineBatchRender();
 
     updateEmptyState(container);
 };
 
 const renderBeatmapList = (listContainer, items) => {
+    // Cancel any in-flight incremental grouped render when switching modes.
+    groupedRenderPassToken += 1;
+    cancelTimelineBatchRender();
     itemsToRender = items;
     const totalHeight = items.length > 0 ? (items.length * VIRTUAL_ITEM_HEIGHT - 12) : 0;
     listContainer.style.height = `${totalHeight}px`;
     listContainer.innerHTML = ''; // Fresh state
+    // Measure containerTop now while layout is stable, before any scroll/resize can shift it.
+    const rect = listContainer.getBoundingClientRect();
+    cachedContainerTop = rect.top + window.scrollY;
     syncVirtualList();
+};
+
+const rerenderVisibleTimelines = () => {
+    const container = document.querySelector('#listContainer');
+    if (!container) return;
+
+    // Repaint only rows around the viewport and split work across frames
+    // to avoid tab-switch hitches on large/grouped lists.
+    const viewportTop = -120;
+    const viewportBottom = window.innerHeight + 120;
+    const visibleBoxes = Array.from(container.querySelectorAll('.list-box')).filter((box) => {
+        const rect = box.getBoundingClientRect();
+        return rect.bottom >= viewportTop && rect.top <= viewportBottom;
+    });
+
+    if (!visibleBoxes.length) return;
+
+    const BATCH_SIZE = 6;
+    let cursor = 0;
+
+    const processBatch = () => {
+        const end = Math.min(cursor + BATCH_SIZE, visibleBoxes.length);
+        for (let i = cursor; i < end; i++) {
+            const box = visibleBoxes[i];
+            const index = Number(box.dataset.renderIndex);
+            applyTimelineToBox(box, Number.isNaN(index) ? undefined : index);
+        }
+        cursor = end;
+
+        if (cursor < visibleBoxes.length) {
+            requestAnimationFrame(processBatch);
+        }
+    };
+
+    requestAnimationFrame(processBatch);
 };
 
 // ============================================================
 // Grouped-by-song rendering
 // ============================================================
 
-// Persists which groups are expanded (keyed by song title+artist)
+// Persists which groups are expanded (keyed by song title+artist+creator)
 const groupedExpandedKeys = new Set();
 
 /**
- * Returns a stable key for a song group based on the first map in the group.
+ * Returns a stable key for a song group.
+ * Group by song + mapper so same-title mapsets by different creators stay separated.
  */
-const getGroupKey = (item) => `${(item.artistUnicode || item.artist || '').toLowerCase()}||${(item.titleUnicode || item.title || '').toLowerCase()}`;
+const getGroupKey = (item) => `${(item.artistUnicode || item.artist || '').toLowerCase()}||${(item.titleUnicode || item.title || '').toLowerCase()}||${(item.creator || '').toLowerCase()}`;
 
 /**
  * Groups an array of beatmap items by song (artist + title).
@@ -1799,6 +1991,12 @@ const buildGroupHeaderRow = (group, groupIndex) => {
     countEl.textContent = `${items.length} difficult${items.length === 1 ? 'y' : 'ies'}`;
     info.appendChild(countEl);
 
+    const creatorTag = document.createElement('span');
+    creatorTag.classList.add('meta-tag', 'group-row-creator-tag');
+    creatorTag.textContent = normalized.creator;
+    creatorTag.dataset.tooltip = 'Mapper';
+    info.appendChild(creatorTag);
+
     // Right: version carousel
     const carousel = document.createElement('div');
     carousel.classList.add('group-row-carousel');
@@ -1839,11 +2037,14 @@ const buildGroupHeaderRow = (group, groupIndex) => {
     const ensureChildrenBuilt = () => {
         if (childrenInner.children.length > 0) return; // already built
         items.forEach((item, i) => {
-            childrenInner.appendChild(buildGroupChildRow(item, i));
+            const row = buildGroupChildRow(item, i);
+            childrenInner.appendChild(row);
+            const box = row.querySelector('.list-box');
+            if (box) {
+                batchRenderTimelines.push({ el: box, index: item });
+            }
         });
-        childrenInner.querySelectorAll('.list-box').forEach(box => {
-            applyTimelineToBox(box, Number(box.dataset.renderIndex || 0));
-        });
+        scheduleTimelineBatchRender();
     };
 
     // If starting expanded, build immediately
@@ -1941,17 +2142,41 @@ const buildGroupHeaderRow = (group, groupIndex) => {
  * Renders the grouped layout (non-virtual, flow layout).
  */
 const renderGroupedView = (listContainer, groups) => {
+    const passToken = ++groupedRenderPassToken;
+    const BATCH_SIZE = 12;
+
+    cancelTimelineBatchRender();
     listContainer.style.height = ''; // Let content determine height for grouped mode
     listContainer.innerHTML = '';
 
-    const fragment = document.createDocumentFragment();
-    groups.forEach((group, i) => {
-        const el = buildGroupHeaderRow(group, i);
-        fragment.appendChild(el);
-    });
-    listContainer.appendChild(fragment);
+    if (!groups.length) {
+        updateEmptyState(listContainer);
+        return;
+    }
 
-    updateEmptyState(listContainer);
+    let cursor = 0;
+    const processBatch = () => {
+        // Stop stale jobs (e.g. user switched tabs while batches were pending).
+        if (passToken !== groupedRenderPassToken) return;
+        if (!listContainer.isConnected || !listContainer.classList.contains('view-grouped')) return;
+
+        const fragment = document.createDocumentFragment();
+        const end = Math.min(cursor + BATCH_SIZE, groups.length);
+        for (let i = cursor; i < end; i++) {
+            fragment.appendChild(buildGroupHeaderRow(groups[i], i));
+        }
+        listContainer.appendChild(fragment);
+        cursor = end;
+
+        if (cursor < groups.length) {
+            requestAnimationFrame(processBatch);
+            return;
+        }
+
+        updateEmptyState(listContainer);
+    };
+
+    requestAnimationFrame(processBatch);
 };
 
 const setLoading = (isLoading) => {
@@ -2113,6 +2338,11 @@ const updateListItemElement = (itemId) => {
         durationStat.innerHTML = `<strong>Duration:</strong> ${formatDuration(item.durationMs)}`;
     }
 
+    const calculatedSrTag = el.querySelector('.meta-tag--calculated-sr');
+    if (calculatedSrTag) {
+        applyCalculatedStarTagState(calculatedSrTag, item?.starRating);
+    }
+
     const progressStat = el.querySelector('.progress-stat') || el.querySelector('.stat-item');
     if (progressStat) {
         const baseProgress = item ? (item.progress || 0) : (Number(el.dataset.progress) || 0);
@@ -2121,8 +2351,7 @@ const updateListItemElement = (itemId) => {
     }
 
     // 5. Update Timeline Canvas
-    const renderIndex = Number(el.dataset.renderIndex);
-    applyTimelineToBox(el, renderIndex);
+    applyTimelineToBox(el, item);
 };
 
 const insertItemIntoTodoView = (itemId) => {
@@ -2268,6 +2497,9 @@ const sortItems = (items, mode, direction) => {
         case 'progress':
             sorted.sort((a, b) => ((a.progress || 0) - (b.progress || 0)) * multiplier);
             break;
+        case 'starRating':
+            sorted.sort((a, b) => ((a.starRating || 0) - (b.starRating || 0)) * multiplier);
+            break;
         case 'dateAdded':
         default:
             sorted.sort((a, b) => ((a.dateAdded || 0) - (b.dateAdded || 0)) * multiplier);
@@ -2277,23 +2509,39 @@ const sortItems = (items, mode, direction) => {
 };
 
 const filterItems = (items, query) => {
-    if (!query) {
-        return items;
+    let filtered = items;
+
+    // Apply text search filter if query exists
+    if (query) {
+        const needle = query.toLowerCase();
+        filtered = filtered.filter((item) => {
+            return [
+                item.title,
+                item.titleUnicode,
+                item.artist,
+                item.artistUnicode,
+                item.creator,
+                item.version,
+                item.beatmapSetID,
+            ]
+                .filter(Boolean)
+                .some((value) => String(value).toLowerCase().includes(needle));
+        });
     }
-    const needle = query.toLowerCase();
-    return items.filter((item) => {
-        return [
-            item.title,
-            item.titleUnicode,
-            item.artist,
-            item.artistUnicode,
-            item.creator,
-            item.version,
-            item.beatmapSetID,
-        ]
-            .filter(Boolean)
-            .some((value) => String(value).toLowerCase().includes(needle));
-    });
+
+    // Always apply star rating filter
+    const isDefaultRange = srFilter.min === 0 && srFilter.max >= 10;
+    if (!isDefaultRange) {
+        filtered = filtered.filter(item => {
+            const sr = item.starRating || 0;
+            if (srFilter.max >= 10) {
+                return sr >= srFilter.min;
+            }
+            return sr >= srFilter.min && sr <= srFilter.max;
+        });
+    }
+
+    return filtered;
 };
 
 const renderFromState = () => {
@@ -2305,14 +2553,14 @@ const renderFromState = () => {
     // Cache mapper name once per render pass for guest difficulty filtering
     _cachedMapperNeedle = (getEffectiveMapperName() || '').trim().toLowerCase();
 
-    // Build a lookup map for O(1) access instead of O(n) Array.find per item
-    const itemMap = new Map();
-    for (const item of beatmapItems) {
-        itemMap.set(item.id, item);
-    }
-
     itemsToRender = [];
     if (viewMode === 'todo') {
+        // Build a lookup map for O(1) access in todo/completed modes.
+        const itemMap = new Map();
+        for (const item of beatmapItems) {
+            itemMap.set(item.id, item);
+        }
+
         // In TODO mode, we only show items in todoIds (in that specific order) and exclude hidden guest difficulties
         for (const id of todoIds) {
             const item = itemMap.get(id);
@@ -2321,6 +2569,12 @@ const renderFromState = () => {
             }
         }
     } else if (viewMode === 'completed') {
+        // Build a lookup map for O(1) access in todo/completed modes.
+        const itemMap = new Map();
+        for (const item of beatmapItems) {
+            itemMap.set(item.id, item);
+        }
+
         // In Completed mode, show items that have been marked done in the order of doneIds, excluding hidden
         for (const id of doneIds) {
             const item = itemMap.get(id);
@@ -2366,6 +2620,10 @@ const saveToStorage = () => {
         version: STORAGE_VERSION,
         todoIds,
         doneIds,
+        sortState: {
+            mode: sortState.mode,
+            direction: sortState.direction
+        },
         items: beatmapItems.map((item) => ({
             id: item.id,
             filePath: item.filePath,
@@ -2378,6 +2636,7 @@ const saveToStorage = () => {
             creator: item.creator,
             version: item.version,
             beatmapSetID: item.beatmapSetID,
+            starRating: isValidStarRating(item.starRating) ? item.starRating : null,
             audio: item.audio || '',
             deadline: (typeof item.deadline === 'number' || item.deadline === null) ? item.deadline : null,
             targetStarRating: (typeof item.targetStarRating === 'number' || item.targetStarRating === null) ? item.targetStarRating : null,
@@ -2386,6 +2645,7 @@ const saveToStorage = () => {
             coverPath: item.coverPath || '',
             highlights: serializeHighlights(item.highlights || []),
             progress: item.progress || 0,
+            notes: item.notes || '',
         })),
     };
 
@@ -2582,6 +2842,9 @@ const buildItemFromContent = async (filePath, content, stat, existing) => {
 let audioAnalysisQueue = [];
 let isAnalyzingAudio = false;
 let audioAnalysisTotal = 0;
+let starRatingQueue = [];
+let isCalculatingStarRating = false;
+let starRatingTotal = 0;
 
 const persistAudioAnalysisState = () => {
     try {
@@ -2633,6 +2896,57 @@ const restoreAudioAnalysisStateFromStorage = () => {
     }
 };
 
+const persistStarRatingState = () => {
+    try {
+        if (!starRatingQueue.length) {
+            localStorage.removeItem(STAR_RATING_STATE_KEY);
+            return;
+        }
+        localStorage.setItem(STAR_RATING_STATE_KEY, JSON.stringify({
+            queue: starRatingQueue,
+            total: starRatingTotal,
+        }));
+    } catch (e) {
+        // Non-fatal persistence failure.
+    }
+};
+
+const restoreStarRatingStateFromStorage = () => {
+    try {
+        const raw = localStorage.getItem(STAR_RATING_STATE_KEY);
+        if (!raw) return;
+
+        const state = JSON.parse(raw);
+        if (!state || !Array.isArray(state.queue)) return;
+
+        const previousQueueLen = state.queue.length;
+        const previousTotal = Number(state.total) || 0;
+        const previousCompleted = Math.max(0, previousTotal - previousQueueLen);
+
+        const validQueue = [];
+        const seen = new Set();
+        for (const id of state.queue) {
+            if (!id || seen.has(id)) continue;
+            const item = beatmapItems.find(i => i.id === id);
+            if (item && item.filePath && isStarRatingMissing(item.starRating)) {
+                validQueue.push(id);
+                seen.add(id);
+            }
+        }
+
+        if (!validQueue.length) {
+            localStorage.removeItem(STAR_RATING_STATE_KEY);
+            return;
+        }
+
+        starRatingQueue = validQueue;
+        starRatingTotal = previousCompleted + validQueue.length;
+        updateRefreshProgress();
+    } catch (e) {
+        // Ignore malformed state.
+    }
+};
+
 const queueMissingAudioAnalysisFromItems = (items) => {
     if (!Array.isArray(items)) return;
     for (const item of items) {
@@ -2642,18 +2956,38 @@ const queueMissingAudioAnalysisFromItems = (items) => {
     }
 };
 
+const queueMissingStarRatingFromItems = (items) => {
+    if (!Array.isArray(items)) return;
+    for (const item of items) {
+        if (item && item.filePath && item.id && isStarRatingMissing(item.starRating)) {
+            scheduleStarRatingCalculation(item.id);
+        }
+    }
+};
+
 let _lastTooltipUpdate = 0;
 
-const updateRefreshProgress = (completed, total) => {
+const updateRefreshProgress = () => {
     const refreshBtn = document.querySelector('#refreshBtn');
     if (!refreshBtn) return;
+
+    const audioTotal = Math.max(0, audioAnalysisTotal);
+    const starTotal = Math.max(0, starRatingTotal);
+    const total = audioTotal + starTotal;
+
+    const audioCompleted = audioTotal > 0 ? Math.max(0, audioTotal - audioAnalysisQueue.length) : 0;
+    const starCompleted = starTotal > 0 ? Math.max(0, starTotal - starRatingQueue.length) : 0;
+    const completed = audioCompleted + starCompleted;
 
     if (total <= 0) {
         refreshBtn.style.setProperty('--refresh-progress', '0%');
         refreshBtn.dataset.tooltip = 'Refresh last directory';
+        refreshBtn.classList.remove('is-analyzing');
         _lastTooltipUpdate = 0;
         return;
     }
+
+    refreshBtn.classList.add('is-analyzing');
 
     const progress = Math.min(100, Math.max(0, (completed / total) * 100));
     refreshBtn.style.setProperty('--refresh-progress', `${progress}%`);
@@ -2662,7 +2996,15 @@ const updateRefreshProgress = (completed, total) => {
     const now = Date.now();
     if (now - _lastTooltipUpdate > 2000 || completed === total) {
         _lastTooltipUpdate = now;
-        refreshBtn.dataset.tooltip = `Analyzing audio durations... ${Math.round(progress)}% (${completed}/${total})`;
+        const hasAudio = audioTotal > 0;
+        const hasStar = starTotal > 0;
+        if (hasAudio && hasStar) {
+            refreshBtn.dataset.tooltip = `Background analysis... ${Math.round(progress)}% (Audio ${audioCompleted}/${audioTotal}, SR ${starCompleted}/${starTotal})`;
+        } else if (hasStar) {
+            refreshBtn.dataset.tooltip = `Calculating star ratings... ${Math.round(progress)}% (${completed}/${total})`;
+        } else {
+            refreshBtn.dataset.tooltip = `Analyzing audio durations... ${Math.round(progress)}% (${completed}/${total})`;
+        }
     }
 };
 
@@ -2676,16 +3018,26 @@ const scheduleAudioAnalysis = (itemId) => {
     }
 };
 
+const scheduleStarRatingCalculation = (itemId) => {
+    if (!starRatingQueue.includes(itemId)) {
+        starRatingQueue.push(itemId);
+        if (isCalculatingStarRating || starRatingTotal > 0) {
+            starRatingTotal += 1;
+        }
+        persistStarRatingState();
+    }
+};
+
+const processBackgroundQueues = () => {
+    processStarRatingQueue();
+    processAudioQueue();
+};
+
 const processAudioQueue = async () => {
     if (isAnalyzingAudio || audioAnalysisQueue.length === 0) return;
     isAnalyzingAudio = true;
     audioAnalysisTotal = Math.max(audioAnalysisTotal, audioAnalysisQueue.length);
-
-    const refreshBtn = document.querySelector('#refreshBtn');
-    if (refreshBtn) {
-        refreshBtn.classList.add('is-analyzing');
-        refreshBtn.dataset.tooltip = 'Analyzing audio durations...';
-    }
+    updateRefreshProgress();
 
     let unsavedCount = 0;
     const pendingUIUpdates = new Set();
@@ -2792,8 +3144,7 @@ const processAudioQueue = async () => {
             if (found) unsavedCount++;
         }
 
-        const completed = audioAnalysisTotal - audioAnalysisQueue.length;
-        updateRefreshProgress(completed, audioAnalysisTotal);
+        updateRefreshProgress();
 
         // Save periodically
         if (unsavedCount >= 25) {
@@ -2824,12 +3175,112 @@ const processAudioQueue = async () => {
 
     isAnalyzingAudio = false;
     audioAnalysisTotal = 0;
-    updateRefreshProgress(0, 0);
-    if (refreshBtn) {
-        refreshBtn.classList.remove('is-analyzing');
-        refreshBtn.dataset.tooltip = 'Refresh last directory';
-    }
+    updateRefreshProgress();
     localStorage.removeItem(AUDIO_ANALYSIS_STATE_KEY);
+};
+
+const processStarRatingQueue = async () => {
+    if (isCalculatingStarRating || starRatingQueue.length === 0) return;
+
+    isCalculatingStarRating = true;
+    starRatingTotal = Math.max(starRatingTotal, starRatingQueue.length);
+    updateRefreshProgress();
+
+    let unsavedCount = 0;
+    const pendingUIUpdates = new Set();
+    let uiUpdateRAF = null;
+
+    const flushUIUpdates = () => {
+        if (pendingUIUpdates.size === 0) return;
+        const ids = [...pendingUIUpdates];
+        pendingUIUpdates.clear();
+        for (const id of ids) {
+            const el = document.querySelector(`[data-item-id="${id}"]`);
+            if (el) {
+                updateListItemElement(id);
+            }
+        }
+    };
+
+    const scheduleUIUpdate = (itemId) => {
+        pendingUIUpdates.add(itemId);
+        if (!uiUpdateRAF) {
+            uiUpdateRAF = requestAnimationFrame(() => {
+                uiUpdateRAF = null;
+                flushUIUpdates();
+            });
+        }
+    };
+
+    let persistTimer = null;
+    const debouncedPersist = () => {
+        if (persistTimer) return;
+        persistTimer = setTimeout(() => {
+            persistTimer = null;
+            persistStarRatingState();
+        }, 500);
+    };
+
+    const calculateOne = async (itemId) => {
+        const item = beatmapItems.find(i => i.id === itemId);
+        if (!item || !item.filePath || isValidStarRating(item.starRating)) {
+            return false;
+        }
+
+        try {
+            const rating = await getStarRatingValue(item.filePath);
+            if (isValidStarRating(rating)) {
+                item.starRating = rating;
+                scheduleUIUpdate(item.id);
+                return true;
+            }
+        } catch (err) {
+            // Non-fatal
+        }
+        return false;
+    };
+
+    const CONCURRENCY = 6;
+
+    while (starRatingQueue.length > 0) {
+        const batch = starRatingQueue.splice(0, CONCURRENCY);
+        debouncedPersist();
+
+        const results = await Promise.all(batch.map(id => calculateOne(id)));
+        for (const found of results) {
+            if (found) unsavedCount++;
+        }
+
+        updateRefreshProgress();
+
+        if (unsavedCount >= 25) {
+            saveToStorage();
+            unsavedCount = 0;
+        }
+
+        await new Promise(r => setTimeout(r, 16));
+    }
+
+    if (persistTimer) {
+        clearTimeout(persistTimer);
+        persistTimer = null;
+    }
+    persistStarRatingState();
+
+    if (uiUpdateRAF) {
+        cancelAnimationFrame(uiUpdateRAF);
+        uiUpdateRAF = null;
+    }
+    flushUIUpdates();
+
+    if (unsavedCount > 0) {
+        saveToStorage();
+    }
+
+    isCalculatingStarRating = false;
+    starRatingTotal = 0;
+    updateRefreshProgress();
+    localStorage.removeItem(STAR_RATING_STATE_KEY);
 };
 
 const arrayMax = (arr) => {
@@ -2885,6 +3336,7 @@ const processWorkerResult = (file, existing) => {
         durationMs,
         deadline: existing?.deadline ?? null,
         targetStarRating: existing?.targetStarRating ?? null,
+        notes: existing?.notes || '',
         coverUrl,
         coverPath,
         highlights,
@@ -2893,6 +3345,7 @@ const processWorkerResult = (file, existing) => {
         dateModified: stat?.mtimeMs ?? 0,
         id: existing?.id ?? createItemId(filePath),
         filePath,
+        starRating: isValidStarRating(metadata?.starRating) ? metadata.starRating : null,
     };
 
     if (!durationMs && metadata.audio && filePath) {
@@ -2900,6 +3353,10 @@ const processWorkerResult = (file, existing) => {
         // accurate normalized highlights once the real audio duration is known.
         item.rawTimestamps = { hitStarts, hitEnds, breakPeriods, bookmarks };
         scheduleAudioAnalysis(item.id);
+    }
+
+    if (filePath && isStarRatingMissing(item.starRating)) {
+        scheduleStarRatingCalculation(item.id);
     }
 
     return item;
@@ -2918,6 +3375,7 @@ const buildItemFromCache = (cached) => {
         highlights: cached.highlights ? deserializeHighlights(cached.highlights) : [],
         dateModified: cached.dateModified ?? 0,
         id: cached.id ?? createItemId(cached.filePath),
+        starRating: isValidStarRating(cached.starRating) ? cached.starRating : null,
     };
 };
 
@@ -2937,7 +3395,12 @@ const loadFromStorage = async () => {
     }
     todoIds = stored.todoIds || [];
     doneIds = stored.doneIds || [];
+    if (stored.sortState && typeof stored.sortState === 'object') {
+        sortState.mode = stored.sortState.mode || 'dateAdded';
+        sortState.direction = stored.sortState.direction || 'desc';
+    }
     updateTabCounts();
+    updateSortUI();
 
     // Instant restore: trust the cache, no IPC calls per item.
     // Cover images are deferred to the lazy load queue.
@@ -2951,12 +3414,14 @@ const loadFromStorage = async () => {
     updateTabCounts();
     renderFromState();
 
-    // Resume interrupted audio analysis first, then queue any newly-missing durations.
+    // Resume interrupted background analysis first, then queue any newly-missing data.
     restoreAudioAnalysisStateFromStorage();
+    restoreStarRatingStateFromStorage();
 
-    // Queue audio analysis for items missing duration (in background)
+    // Queue background analysis for missing item metadata.
     queueMissingAudioAnalysisFromItems(beatmapItems);
-    processAudioQueue();
+    queueMissingStarRatingFromItems(beatmapItems);
+    processBackgroundQueues();
 };
 
 const updateSortUI = () => {
@@ -2980,7 +3445,143 @@ const updateSortUI = () => {
     });
 };
 
+const updateSRRangeUI = (event, { rerenderList = true } = {}) => {
+    const minInput = document.getElementById('srMin');
+    const maxInput = document.getElementById('srMax');
+    const minHandle = document.getElementById('srMinHandle');
+    const maxHandle = document.getElementById('srMaxHandle');
+    const track = document.querySelector('.range-track');
 
+    if (!minInput || !maxInput || !minHandle || !maxHandle || !track) return;
+
+    let min = parseFloat(minInput.value);
+    let max = parseFloat(maxInput.value);
+
+    if (min > max) {
+        if (event?.target === minInput) {
+            max = min;
+            maxInput.value = max;
+        } else {
+            min = max;
+            minInput.value = min;
+        }
+    }
+
+    // Precise calculation for 30px visual handles and 4px container cushions
+    const container = document.querySelector('.range-slider-container');
+    const containerWidth = container?.clientWidth || 180;
+
+    // Total travel width is (Container - CushionL - CushionR - HandleWidth)
+    // We'll use 4px for both Left and Right cushions
+    const sideCushion = 4;
+    const handleWidth = 30;
+    const travelWidth = containerWidth - (sideCushion * 2) - handleWidth;
+
+    // Enforce non-overlapping handles visually
+    // Minimum gap needed between values to avoid handles touching
+    const srGapPerPx = 10 / travelWidth;
+    const minSRGap = (handleWidth + 4) * srGapPerPx; // 4px extra gap between handles
+
+    if (max - min < minSRGap) {
+        if (event?.target === minInput) {
+            min = Math.max(0, max - minSRGap);
+            minInput.value = min.toFixed(1);
+        } else if (event?.target === maxInput) {
+            max = Math.min(10, min + minSRGap);
+            maxInput.value = max.toFixed(1);
+        }
+    }
+
+    srFilter = { min, max };
+
+    // Update Handles Text
+    minHandle.textContent = min.toFixed(1);
+    if (max >= 10) {
+        maxHandle.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 512" width="14" height="14" fill="currentColor"><path d="M0 256c0-88.4 71.6-160 160-160 50.4 0 97.8 23.7 128 64l32 42.7 32-42.7c30.2-40.3 77.6-64 128-64 88.4 0 160 71.6 160 160S568.4 416 480 416c-50.4 0-97.8-23.7-128-64l-32-42.7-32 42.7c-30.2 40.3-77.6 64-128 64-88.4 0-160-71.6-160-160zm280 0l-43.2-57.6c-18.1-24.2-46.6-38.4-76.8-38.4-53 0-96 43-96 96s43 96 96 96c30.2 0 58.7-14.2 76.8-38.4L280 256zm80 0l43.2 57.6c18.1 24.2 46.6 38.4 76.8 38.4 53 0 96-43 96-96s-43-96-96-96c-30.2 0-58.7 14.2-76.8 38.4L360 256z"/></svg>`;
+    } else {
+        maxHandle.textContent = max.toFixed(1);
+    }
+
+    // Update Handle Background Colors
+    minHandle.style.background = getStarRatingColor(min);
+    // Determine text color based on background darkness (approximate)
+    minHandle.style.color = (min > 6.5) ? 'var(--text-primary)' : 'var(--bg-tertiary)';
+
+    const isMaxInfinity = max >= 10;
+    maxHandle.style.background = isMaxInfinity ? 'var(--bg-tertiary)' : getStarRatingColor(max);
+    maxHandle.style.color = (isMaxInfinity || max > 6.5) ? 'var(--text-primary)' : 'var(--bg-tertiary)';
+
+    // Set handle positions using cushions
+    const left1 = sideCushion + (min / 10) * travelWidth;
+    const left2 = sideCushion + (max / 10) * travelWidth;
+
+    minHandle.style.left = `${left1}px`;
+    maxHandle.style.left = `${left2}px`;
+
+    // Position track using clip-path on a fixed gradient
+    // This makes the gradient NOT shrink when resizing the range
+    // We add a 4px gap between the visual handle and the gradient start/end
+    const gradientGap = 4;
+    const clipStart = ((left1 + handleWidth + gradientGap) / containerWidth) * 100;
+    const clipEnd = ((left2 - gradientGap) / containerWidth) * 100;
+
+    if (clipEnd > clipStart) {
+        track.style.display = 'block';
+        track.style.clipPath = `inset(0 ${100 - clipEnd}% 0 ${clipStart}%)`;
+    } else {
+        track.style.display = 'none';
+    }
+
+    // Proximity switching
+    if (document.activeElement !== minInput && document.activeElement !== maxInput) {
+        if (container && !container._srZIndexInit) {
+            container._srZIndexInit = true;
+            container.onmousemove = (e) => {
+                const rect = container.getBoundingClientRect();
+                const x = e.clientX - rect.left;
+                const pct = (x / rect.width) * 10;
+                if (Math.abs(pct - min) < Math.abs(pct - max)) {
+                    minInput.style.zIndex = '25';
+                    maxInput.style.zIndex = '20';
+                } else {
+                    maxInput.style.zIndex = '25';
+                    minInput.style.zIndex = '20';
+                }
+            };
+        }
+    }
+
+    // Always ensure the active handle stays on top during dragging
+    if (document.activeElement === minInput) minInput.style.zIndex = '30';
+    if (document.activeElement === maxInput) maxInput.style.zIndex = '30';
+
+    if (rerenderList && typeof renderFromState === 'function') {
+        renderFromState();
+    }
+};
+
+// Re-run UI update whenever the slider container changes width (e.g. window resize)
+if (typeof ResizeObserver !== 'undefined') {
+    const srResizeObserver = new ResizeObserver(() => {
+        updateSRRangeUI(null, { rerenderList: false });
+    });
+
+    const observeSRContainer = () => {
+        const container = document.querySelector('.range-slider-container');
+        if (container) {
+            srResizeObserver.observe(container);
+        } else {
+            // Container not in DOM yet — wait for it
+            requestAnimationFrame(observeSRContainer);
+        }
+    };
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', observeSRContainer);
+    } else {
+        observeSRContainer();
+    }
+}
 
 const getAudioDurationMs = async (filePath) => {
     if (!filePath || !window.beatmapApi?.getAudioDuration) {
@@ -2993,6 +3594,19 @@ const getAudioDurationMs = async (filePath) => {
         return duration || null;
     } catch (error) {
         console.error('Audio analysis failed:', error);
+        return null;
+    }
+};
+
+const getStarRatingValue = async (filePath) => {
+    if (!filePath || !window.beatmapApi?.calculateStarRating) {
+        return null;
+    }
+
+    try {
+        const rating = await window.beatmapApi.calculateStarRating(filePath);
+        return isValidStarRating(rating) ? rating : null;
+    } catch (error) {
         return null;
     }
 };
@@ -3194,8 +3808,9 @@ const loadBeatmapFromDialog = async () => {
         updateTabCounts();
         renderFromState();
         queueMissingAudioAnalysisFromItems(items);
+        queueMissingStarRatingFromItems(items);
         scheduleSave();
-        processAudioQueue();
+        processBackgroundQueues();
     } finally {
         if (didSetLoading) {
             setLoading(false);
@@ -3229,6 +3844,9 @@ const initScanEventListeners = async () => {
                 streamingScanState.items.push(existing);
                 if (existing.audio && typeof existing.durationMs !== 'number') {
                     scheduleAudioAnalysis(existing.id);
+                }
+                if (isStarRatingMissing(existing.starRating)) {
+                    scheduleStarRatingCalculation(existing.id);
                 }
             } else {
                 try {
@@ -3279,7 +3897,9 @@ const initScanEventListeners = async () => {
         updateTabCounts();
         renderFromState();
         saveToStorage();
-        processAudioQueue();
+        queueMissingAudioAnalysisFromItems(items);
+        queueMissingStarRatingFromItems(items);
+        processBackgroundQueues();
         setLoading(false);
 
         if (streamingScanState.resolveComplete) {
@@ -3369,7 +3989,9 @@ const loadBeatmapsFromResult = async (result, existingItemsMapOverride) => {
             updateTabCounts();
             renderFromState();
             saveToStorage();
-            processAudioQueue();
+            queueMissingAudioAnalysisFromItems(items);
+            queueMissingStarRatingFromItems(items);
+            processBackgroundQueues();
         } catch (err) {
             console.error('loadBeatmapsFromResult failed:', err);
         } finally {
@@ -3558,10 +4180,10 @@ const init = async () => {
         if (raw) {
             try {
                 settings = { ...settings, ...JSON.parse(raw) };
-                const height = settings.listItemHeight || 240;
+                const height = 170; // Forced to 170px
                 VIRTUAL_ITEM_HEIGHT = height + 12;
                 document.documentElement.style.setProperty('--list-item-height', `${height}px`);
-                document.documentElement.style.setProperty('--title-lines', height > 160 ? 4 : 2);
+                document.documentElement.style.setProperty('--title-lines', 2);
             } catch (e) { }
         }
         // Generate userId if not present (first run)
@@ -3607,10 +4229,6 @@ const init = async () => {
         if (volumeSlider) volumeSlider.value = settings.volume ?? 0.5;
         if (volumeValue) volumeValue.textContent = `${Math.round((settings.volume ?? 0.5) * 100)}%`;
 
-        const heightSlider = document.querySelector('#listItemHeightSlider');
-        const heightValue = document.querySelector('#listItemHeightValue');
-        if (heightSlider) heightSlider.value = settings.listItemHeight ?? 240;
-        if (heightValue) heightValue.textContent = `${settings.listItemHeight ?? 240}px`;
 
         // Update user ID display
         const userIdValue = document.querySelector('#userIdValue');
@@ -3657,7 +4275,17 @@ const init = async () => {
             if (tab === viewMode) return;
             viewMode = tab;
             tabButtons.forEach(b => b.classList.toggle('is-active', b.dataset.tab === viewMode));
-            renderFromState();
+
+            // Yield one frame so the tab active state paints immediately,
+            // then run potentially heavy list rendering work.
+            if (pendingTabRenderRaf) {
+                cancelAnimationFrame(pendingTabRenderRaf);
+            }
+            pendingTabRenderRaf = requestAnimationFrame(() => {
+                pendingTabRenderRaf = 0;
+                if (viewMode !== tab) return;
+                renderFromState();
+            });
         });
     });
 
@@ -3699,6 +4327,7 @@ const init = async () => {
             }
             updateSortUI();
             renderFromState();
+            scheduleSave();
         });
     });
 
@@ -4012,25 +4641,6 @@ const init = async () => {
         });
     }
 
-    // List Item Height Slider
-    const heightSlider = document.getElementById('listItemHeightSlider');
-    const heightValueText = document.getElementById('listItemHeightValue');
-    if (heightSlider) {
-        heightSlider.addEventListener('input', (e) => {
-            const height = parseInt(e.target.value);
-            settings.listItemHeight = height;
-            VIRTUAL_ITEM_HEIGHT = height + 12; // Height + 12px gap
-            if (heightValueText) heightValueText.textContent = `${height}px`;
-
-            // Update CSS variables immediately
-            document.documentElement.style.setProperty('--list-item-height', `${height}px`);
-            document.documentElement.style.setProperty('--title-lines', height > 160 ? 4 : 2);
-
-            saveSettings();
-            // Re-render to update the virtual list heights and container total height
-            renderFromState();
-        });
-    }
 
     // Rescan Mapper Name Input
     let rescanMapperTimer = null;
@@ -4142,16 +4752,19 @@ const init = async () => {
 
     // Refresh Btn
     document.querySelector('#refreshBtn')?.addEventListener('click', () => {
-        // Ensure any pending audio analysis resumes when the user clicks Refresh.
+        // Ensure any pending background analysis resumes when the user clicks Refresh.
         try {
             if (Array.isArray(beatmapItems) && beatmapItems.length) {
                 beatmapItems.forEach(item => {
                     if (item && item.audio && !item.durationMs) {
                         scheduleAudioAnalysis(item.id);
                     }
+                    if (item && item.filePath && isStarRatingMissing(item.starRating)) {
+                        scheduleStarRatingCalculation(item.id);
+                    }
                 });
             }
-            try { processAudioQueue(); } catch (e) { /* swallow */ }
+            try { processBackgroundQueues(); } catch (e) { /* swallow */ }
         } catch (e) {
             // non-fatal
         }
@@ -4365,18 +4978,74 @@ const init = async () => {
 
     // Virtual Scroll Sync — debounced via rAF to avoid redundant work
     let scrollRAF = null;
+    let timelineRefreshRAF = null;
+    let timelineRefreshTimer = null;
+    let resizeSettleTimer = null;
     const debouncedSync = () => {
+        if (isWindowResizeInProgress) return;
         if (scrollRAF) return;
         scrollRAF = requestAnimationFrame(() => {
             scrollRAF = null;
+            if (isWindowResizeInProgress) return;
             syncVirtualList();
         });
     };
+    const scheduleTimelineRefresh = () => {
+        if (isWindowResizeInProgress) return;
+        if (timelineRefreshRAF) return;
+        timelineRefreshRAF = requestAnimationFrame(() => {
+            timelineRefreshRAF = null;
+            rerenderVisibleTimelines();
+        });
+    };
+    const queueTimelineRefresh = ({ includeSync = false } = {}) => {
+        if (isWindowResizeInProgress) return;
+        if (includeSync) {
+            debouncedSync();
+        }
+
+        if (timelineRefreshTimer) {
+            clearTimeout(timelineRefreshTimer);
+        }
+
+        // Slight delay lets browser restore layout state after tab/window focus.
+        timelineRefreshTimer = setTimeout(() => {
+            timelineRefreshTimer = null;
+            scheduleTimelineRefresh();
+        }, 90);
+    };
     window.addEventListener('scroll', debouncedSync, { passive: true });
-    window.addEventListener('resize', debouncedSync, { passive: true });
+    window.addEventListener('resize', () => {
+        isWindowResizeInProgress = true;
+        document.body?.classList.add('window-resizing');
+
+        // Run a single final paint pass after resize settles to avoid artifacts.
+        if (resizeSettleTimer) {
+            clearTimeout(resizeSettleTimer);
+        }
+        resizeSettleTimer = setTimeout(() => {
+            resizeSettleTimer = null;
+            isWindowResizeInProgress = false;
+            document.body?.classList.remove('window-resizing');
+            debouncedSync();
+            scheduleTimelineRefresh();
+            scheduleTimelineBatchRender();
+        }, 170);
+    }, { passive: true });
+    window.addEventListener('focus', () => {
+        queueTimelineRefresh();
+    }, { passive: true });
+    window.addEventListener('pageshow', () => {
+        queueTimelineRefresh();
+    }, { passive: true });
+    document.addEventListener('visibilitychange', () => {
+        if (!document.hidden) {
+            queueTimelineRefresh();
+        }
+    });
 
 
-    // Force-save on app close so audio durations and state are never lost
+    // Force-save on app close so background analysis state is never lost
     window.addEventListener('beforeunload', () => {
         if (saveTimer) {
             window.clearTimeout(saveTimer);
@@ -4384,6 +5053,7 @@ const init = async () => {
         }
         saveToStorage();
         persistAudioAnalysisState();
+        persistStarRatingState();
     });
 
     // Startup sequence
@@ -4393,6 +5063,12 @@ const init = async () => {
 
     initEventDelegation();
     updateSortUI();
+    const srMin = document.getElementById('srMin');
+    const srMax = document.getElementById('srMax');
+    if (srMin) srMin.addEventListener('input', updateSRRangeUI);
+    if (srMax) srMax.addEventListener('input', updateSRRangeUI);
+    updateSRRangeUI(null, { rerenderList: false });
+
     renderFromState();
 
     // First run wizard

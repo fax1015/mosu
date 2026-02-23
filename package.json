@@ -1,6 +1,6 @@
 {
   "name": "mosu",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "tracks the progress done of osu! maps",
   "keywords": [
     "tauri",

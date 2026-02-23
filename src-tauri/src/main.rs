@@ -12,6 +12,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, UNIX_EPOCH};
 use tauri::Emitter;
 use walkdir::WalkDir;
+use rosu_pp::{Beatmap, Difficulty};
 
 #[derive(Debug, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -45,6 +46,7 @@ struct ParsedMetadata {
     #[serde(rename = "beatmapSetID")]
     beatmap_set_id: String,
     preview_time: i32,
+    star_rating: f64,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -245,6 +247,7 @@ impl OsuSection {
 fn parse_osu_content(content: &str) -> ParsedOsu {
     let mut metadata = ParsedMetadata {
         preview_time: -1,
+        star_rating: -1.0,
         ..Default::default()
     };
 
@@ -600,6 +603,23 @@ struct ScanCompleteEvent {
     total_files: usize,
 }
 
+/// Quick header-only check to see if a file matches the mapper filter.
+/// Returns true if the file should be included (matches mapper or no mapper filter).
+fn file_matches_mapper(file_path: &str, mapper: &str) -> bool {
+    let path = Path::new(file_path);
+    if let Ok(file) = fs::File::open(path) {
+        let mut reader = BufReader::with_capacity(8192, file);
+        let mut buf = Vec::with_capacity(8192);
+        let _ = reader.by_ref().take(8192).read_to_end(&mut buf);
+        let header = String::from_utf8_lossy(&buf);
+        let (creator, version) = parse_header_creator_and_version(&header);
+        let creator_lower = creator.to_ascii_lowercase();
+        let version_lower = version.to_ascii_lowercase();
+        return creator_lower.contains(mapper) || version_lower.contains(mapper);
+    }
+    false
+}
+
 fn scan_directory_streaming(
     dir_path: &str,
     mapper_name: Option<String>,
@@ -625,14 +645,24 @@ fn scan_directory_streaming(
         return;
     }
 
-    let total_discovered = osu_entries.len();
     let known = Arc::new(known_files.unwrap_or_default());
     let mapper = Arc::new(mapper_name.unwrap_or_default().trim().to_ascii_lowercase());
     let has_mapper = !mapper.is_empty();
 
+    // When mapper filter is active, pre-count matching files for accurate progress
+    let total_for_progress = if has_mapper {
+        let mapper_str = mapper.as_str();
+        osu_entries.iter()
+            .filter(|(path, _)| file_matches_mapper(path, mapper_str))
+            .count()
+    } else {
+        osu_entries.len()
+    };
+
     // Shared state for streaming batches
     let batch_counter = Arc::new(Mutex::new(0_usize));
     let total_emitted = Arc::new(Mutex::new(0_usize));
+    let total_for_progress_arc = Arc::new(total_for_progress);
 
     // Phase 2: Parse files in parallel, emit batches as they complete
     let parallelism = std::thread::available_parallelism()
@@ -652,6 +682,7 @@ fn scan_directory_streaming(
             let mapper = Arc::clone(&mapper);
             let batch_counter = Arc::clone(&batch_counter);
             let total_emitted = Arc::clone(&total_emitted);
+            let total_for_progress = Arc::clone(&total_for_progress_arc);
             let dir_str = dir_string.clone();
 
             handles.push(scope.spawn(move || {
@@ -680,7 +711,7 @@ fn scan_directory_streaming(
                             files: std::mem::replace(&mut local_batch, Vec::with_capacity(50)),
                             directory: dir_str.clone(),
                             batch_index: batch_idx,
-                            total_files: total_discovered,
+                            total_files: *total_for_progress,
                         });
                         *total_emitted.lock().unwrap() += count;
                     }
@@ -699,7 +730,7 @@ fn scan_directory_streaming(
                         files: local_batch,
                         directory: dir_str.clone(),
                         batch_index: batch_idx,
-                        total_files: total_discovered,
+                        total_files: *total_for_progress,
                     });
                     *total_emitted.lock().unwrap() += count;
                 }
@@ -928,6 +959,23 @@ fn get_audio_duration(file_path: String) -> Option<f64> {
     let tagged_file = Probe::open(path).ok()?.read().ok()?;
     let duration = tagged_file.properties().duration();
     Some(duration.as_millis() as f64)
+}
+
+#[tauri::command]
+async fn calculate_star_rating(file_path: String) -> Option<f64> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let bytes = fs::read(file_path).ok()?;
+        let map = Beatmap::from_bytes(&bytes).ok()?;
+        let stars = Difficulty::new().calculate(&map).stars();
+        if stars.is_finite() && stars >= 0.0 {
+            Some(stars)
+        } else {
+            None
+        }
+    })
+    .await
+    .ok()
+    .flatten()
 }
 
 #[tauri::command]
@@ -1178,6 +1226,7 @@ fn main() {
             window_close,
             embed_sync,
             get_audio_duration,
+            calculate_star_rating,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
