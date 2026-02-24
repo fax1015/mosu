@@ -13,10 +13,12 @@
     "test": "echo \"Error: no test specified\" && exit 1",
     "start": "tauri dev",
     "dev": "tauri dev",
-    "build": "tauri build",
+    "build": "npm run sync-version && npm run clean && tauri build",
     "package": "tauri build",
     "make": "tauri build",
-    "dev:watch": "tauri dev"
+    "dev:watch": "tauri dev",
+    "clean": "node scripts/clean-target.js",
+    "sync-version": "node scripts/update-version.js"
   },
   "dependencies": {},
   "devDependencies": {

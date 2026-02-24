@@ -401,13 +401,87 @@ const GlobalDatePicker = {
 };
 // Generate a unique user ID for embed syncing
 const generateUserId = () => {
-    return 'user_' + Date.now().toString(36) + '_' + Math.random().toString(36).substring(2, 15);
+    return Math.floor(Math.random() * 90000000 + 10000000).toString();
+};
+
+const showNotification = (title, message, type = 'default', duration = 5000) => {
+    let container = document.querySelector('.notification-container');
+    if (!container) {
+        container = document.createElement('div');
+        container.className = 'notification-container';
+        container.setAttribute('popover', 'manual');
+        document.body.appendChild(container);
+
+        // Show the popover so it enters the top layer
+        try {
+            if (container.showPopover) {
+                container.showPopover();
+            }
+        } catch (e) {
+            console.warn('[mosu] Popover API not available for notifications:', e);
+        }
+    } else {
+        // Re-show to bring to top of top layer (above dialogs)
+        try {
+            if (container.showPopover) {
+                container.showPopover();
+            }
+        } catch (e) {
+            // Ignore if already shown
+        }
+    }
+
+    const notification = document.createElement('div');
+    notification.className = `notification is-${type}`;
+
+    let icon = '';
+    if (type === 'success') {
+        icon = `<svg class="notification-icon" viewBox="0 0 512 512"><path fill="var(--success)" d="M256 512A256 256 0 1 0 256 0a256 256 0 1 0 0 512zM369 209L241 337c-9.4 9.4-24.6 9.4-33.9 0l-64-64c-9.4-9.4-9.4-24.6 0-33.9s24.6-9.4 33.9 0l47 47L335 175c9.4-9.4 24.6-9.4 33.9 0s9.4 24.6 0 33.9z"/></svg>`;
+    } else if (type === 'error') {
+        icon = `<svg class="notification-icon" viewBox="0 0 512 512"><path fill="var(--error)" d="M256 512A256 256 0 1 0 256 0a256 256 0 1 0 0 512zm0-384c13.3 0 24 10.7 24 24V264c0 13.3-10.7 24-24 24s-24-10.7-24-24V152c0-13.3 10.7-24 24-24zM224 352a32 32 0 1 1 64 0a32 32 0 1 1 -64 0z"/></svg>`;
+    } else {
+        icon = `<svg class="notification-icon" viewBox="0 0 512 512"><path fill="var(--accent-primary)" d="M256 512A256 256 0 1 0 256 0a256 256 0 1 0 0 512zM216 336h24V272H216c-13.3 0-24-10.7-24-24s10.7-24 24-24h48c13.3 0 24 10.7 24 24v88h8c13.3 0 24 10.7 24 24s-10.7 24-24 24H216c-13.3 0-24-10.7-24-24s10.7-24 24-24zm40-144a32 32 0 1 1 0-64 32 32 0 1 1 0 64z"/></svg>`;
+    }
+
+    const closeBtn = document.createElement('button');
+    closeBtn.className = 'notification-close';
+    closeBtn.innerHTML = `<svg viewBox="0 0 384 512"><path fill="currentColor" d="M342.6 150.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0L192 210.7 86.6 105.4c-12.5-12.5-32.8-12.5-45.3 0s-12.5 32.8 0 45.3L146.7 256 41.4 361.4c-12.5 12.5-12.5 32.8 0 45.3s32.8 12.5 45.3 0L192 301.3 297.4 406.6c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L237.3 256 342.6 150.6z"/></svg>`;
+    closeBtn.setAttribute('aria-label', 'Dismiss');
+    closeBtn.addEventListener('click', () => {
+        notification.classList.remove('is-visible');
+        setTimeout(() => notification.remove(), 300);
+    });
+
+    notification.innerHTML = `
+        ${icon}
+        <div class="notification-content">
+            <div class="notification-title">${title}</div>
+            <div class="notification-message">${message}</div>
+        </div>
+    `;
+
+    notification.appendChild(closeBtn);
+    container.appendChild(notification);
+
+    // Trigger animation
+    setTimeout(() => notification.classList.add('is-visible'), 10);
+
+    // Remove after duration
+    const timeoutId = setTimeout(() => {
+        notification.classList.remove('is-visible');
+        setTimeout(() => notification.remove(), 300);
+    }, duration);
+
+    // Clear timeout if manually closed
+    closeBtn.addEventListener('click', () => clearTimeout(timeoutId), { once: true });
 };
 
 let settings = {
-    autoDetectMaps: false,
-    autoRescanMapper: false,
+    autoRescan: false,
+    rescanMode: 'mapper',
     rescanMapperName: '',
+    mapperAliases: [],
+    ignoredAliases: [],
     songsDir: null,
     ignoreStartAndBreaks: false,
     ignoreGuestDifficulties: false,
@@ -429,12 +503,88 @@ let settings = {
     groupMapsBySong: true
 };
 
+const processMapperInput = async (value) => {
+    if (!value) return null;
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+
+    console.log('[mosu] Processing mapper input:', trimmed);
+
+    // Check if it's an osu! user URL or a numeric ID
+    const isUrl = trimmed.includes('osu.ppy.sh/users/') || trimmed.includes('osu.ppy.sh/u/');
+    const isNumericId = /^\d+$/.test(trimmed);
+
+    if (isUrl || isNumericId) {
+        try {
+            if (window.appInfo?.getOsuUserData) {
+                console.log('[mosu] Fetching user data for profile link/ID...');
+                const userData = await window.appInfo.getOsuUserData(trimmed);
+                console.log('[mosu] Received user data:', userData);
+
+                if (userData && userData.names && userData.names.length > 0) {
+                    // Update user ID to be the osu! user ID
+                    const oldUserId = settings.userId;
+                    settings.userId = userData.id;
+                    settings.mapperAliases = userData.names;
+
+                    // If the User ID changed, reset the API key to force re-registration on next sync
+                    if (oldUserId !== settings.userId) {
+                        console.log('[mosu] User ID changed, resetting embed API key...');
+                        settings.embedApiKey = null;
+                        settings.embedLastSynced = null;
+                    }
+
+                    if (typeof persistSettings === 'function') {
+                        persistSettings();
+                    }
+                    if (typeof updateSettingsUI === 'function') {
+                        updateSettingsUI();
+                    }
+
+                    const mainName = userData.names[0];
+                    const formerNames = userData.names.slice(1);
+                    const feedback = formerNames.length > 0
+                        ? `Linked profile: ${mainName} (formerly: ${formerNames.join(', ')})`
+                        : `Linked profile: ${mainName}`;
+
+                    showNotification('osu! Profile Linked', feedback, 'success');
+
+                    // Return the ID for display in the input
+                    return userData.id.toString();
+                } else {
+                    console.warn('[mosu] User data returned but names are empty');
+                    settings.mapperAliases = [];
+                }
+            } else {
+                console.error('[mosu] getOsuUserData command is not available in window.appInfo');
+            }
+        } catch (err) {
+            console.error('[mosu] Failed to fetch osu! user data:', err);
+            showNotification('Fetch Failed', err.message || err.toString() || 'Unknown error', 'error');
+        }
+    }
+
+    return trimmed;
+};
+
 // Returns the mapper name that should be used for backend operations.
-// When `autoDetectMaps` is enabled we intentionally return an empty string
-// (so the backend will perform an unfiltered / full scan) while keeping
-// the stored `rescanMapperName` for display in the UI.
 const getEffectiveMapperName = () => {
-    return settings.autoDetectMaps ? '' : (settings.rescanMapperName || '').trim();
+    // If autoRescan is off, we return specifically the current rescanMapperName 
+    // BUT only if we are manually refreshing. 
+    // For the startup auto-rescan logic, we should check settings.autoRescan.
+
+    // In refreshLastDirectory, we call this function.
+    if (settings.rescanMode === 'all') return '';
+
+    if (settings.mapperAliases && settings.mapperAliases.length > 0) {
+        const ignoredSet = new Set((settings.ignoredAliases || []).map(a => a.toLowerCase()));
+        const activeAliases = settings.mapperAliases.filter(name => !ignoredSet.has(name.toLowerCase()));
+
+        if (activeAliases.length > 0) {
+            return activeAliases.join(', ');
+        }
+    }
+    return (settings.rescanMapperName || '').trim();
 };
 
 const formatDuration = (ms) => {
@@ -669,35 +819,41 @@ const parseMetadata = (content) => {
 
 const shouldIgnoreGuestDifficulty = (content) => {
     if (!settings.ignoreGuestDifficulties) return false;
-    const mapper = (getEffectiveMapperName() || '').trim().toLowerCase();
-    if (!mapper) return false;
+    const mapperList = (getEffectiveMapperName() || '').split(',').map(m => m.trim().toLowerCase()).filter(Boolean);
+    if (mapperList.length === 0) return false;
     try {
         const meta = parseMetadata(content || '');
         if (!meta) return false;
         const creator = String(meta.creator || '').toLowerCase();
-        if (!creator.includes(mapper)) return false;
         const version = String(meta.version || '').toLowerCase();
-        // If it includes the mapper's name followed by 's, it's likely not a GUEST difficulty but their own
-        if (version.includes(mapper + "'s") || version.includes(mapper + "s'")) return false;
-        return version.includes("'s") || version.includes("s'");
+
+        return mapperList.some(mapper => {
+            if (!creator.includes(mapper)) return false;
+            // If it includes the mapper's name followed by 's, it's likely not a GUEST difficulty but their own
+            if (version.includes(mapper + "'s") || version.includes(mapper + "s'")) return false;
+            return version.includes("'s") || version.includes("s'");
+        });
     } catch (e) {
         return false;
     }
 };
 
-// Cached mapper name for guest difficulty filtering (set before each render pass)
-let _cachedMapperNeedle = '';
+// Cached mapper names for guest difficulty filtering (set before each render pass)
+let _cachedMapperNeedles = [];
 
 const isGuestDifficultyItem = (item) => {
     if (!settings.ignoreGuestDifficulties) return false;
-    const mapper = _cachedMapperNeedle;
-    if (!mapper) return false;
+    const mapperList = _cachedMapperNeedles;
+    if (mapperList.length === 0) return false;
     const creator = String(item.creator || '').toLowerCase();
-    if (!creator.includes(mapper)) return false;
     const version = String(item.version || '').toLowerCase();
-    // If it includes the mapper's name followed by 's, it's likely not a GUEST difficulty but their own
-    if (version.includes(mapper + "'s") || version.includes(mapper + "s'")) return false;
-    return version.includes("'s") || version.includes("s'");
+
+    return mapperList.some(mapper => {
+        if (!creator.includes(mapper)) return false;
+        // If it includes the mapper's name followed by 's, it's likely not a GUEST difficulty but their own
+        if (version.includes(mapper + "'s") || version.includes(mapper + "s'")) return false;
+        return version.includes("'s") || version.includes("s'");
+    });
 };
 
 const parseAudioFilename = (content) => {
@@ -2550,8 +2706,8 @@ const renderFromState = () => {
         return;
     }
 
-    // Cache mapper name once per render pass for guest difficulty filtering
-    _cachedMapperNeedle = (getEffectiveMapperName() || '').trim().toLowerCase();
+    // Cache mapper names once per render pass for guest difficulty filtering
+    _cachedMapperNeedles = (getEffectiveMapperName() || '').split(',').map(m => m.trim().toLowerCase()).filter(Boolean);
 
     itemsToRender = [];
     if (viewMode === 'todo') {
@@ -2652,7 +2808,8 @@ const saveToStorage = () => {
     try {
         localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
     } catch (error) {
-        // Storage may be full; ignore.
+        // Storage may be full
+        showNotification('Storage Full', 'Could not save data. Try clearing some beatmaps.', 'error');
     }
 };
 
@@ -2719,6 +2876,7 @@ const buildEmbedPayload = () => {
     return {
         version: 1,
         userid: settings.userId,
+        mapperName: settings.mapperAliases?.[0] || null,
         lastUpdated: new Date().toISOString(),
         settings: {
             showTodoList: settings.embedShowTodoList,
@@ -2752,6 +2910,12 @@ const performEmbedSync = async () => {
 
     const payload = buildEmbedPayload();
     const syncUrl = `${settings.embedSyncUrl}/api/sync`;
+    const syncBtn = document.querySelector('#embedSyncNowBtn');
+
+    if (syncBtn) {
+        syncBtn.disabled = true;
+        updateEmbedSyncStatus('syncing');
+    }
 
     console.log('Starting embed sync to:', syncUrl);
 
@@ -2760,18 +2924,37 @@ const performEmbedSync = async () => {
 
         console.log('Sync result:', result);
 
-        if (result.success && result.data?.success) {
+        if (result.success && (result.data?.success || result.data === true)) {
             settings.embedLastSynced = Date.now();
             persistSettings();
             updateEmbedSyncStatus('synced');
+            showNotification('Sync Complete', 'Embed tracker has been updated.', 'success');
         } else {
-            const errorMsg = result.data?.error || result.error || 'Unknown error';
-            console.error('Embed sync failed:', errorMsg);
+            let errorMsg = result.data?.error || result.error || 'Sync Failed';
+
+            // Handle specific HTTP status codes
+            if (result.status === 429) {
+                errorMsg = 'Rate Limited';
+            } else if (result.status === 401 || result.status === 403) {
+                errorMsg = 'Invalid API Key';
+            } else if (result.status === 404) {
+                errorMsg = 'Invalid URL';
+            } else if (result.status >= 500) {
+                errorMsg = 'Server Error';
+            }
+
+            console.error('Embed sync failed:', errorMsg, result);
             updateEmbedSyncStatus('error', errorMsg);
+            showNotification('Sync Failed', errorMsg, 'error');
         }
     } catch (err) {
         console.error('Embed sync error:', err);
-        updateEmbedSyncStatus('error', err.message);
+        updateEmbedSyncStatus('error', 'Network Error');
+        showNotification('Sync Failed', 'Network error - check your connection.', 'error');
+    } finally {
+        if (syncBtn) {
+            syncBtn.disabled = false;
+        }
     }
 };
 
@@ -2792,20 +2975,46 @@ const scheduleEmbedSync = () => {
 
 // Update sync status UI
 const updateEmbedSyncStatus = (status, error = null) => {
-    const statusEl = document.querySelector('#embedSyncStatus');
+    const syncBtn = document.querySelector('#embedSyncNowBtn');
     const lastSyncEl = document.querySelector('#embedLastSynced');
 
-    if (statusEl) {
-        statusEl.classList.remove('syncing', 'synced', 'error');
+    if (syncBtn) {
+        // Clear previous status classes
+        syncBtn.classList.remove('status-syncing', 'status-synced', 'status-error');
+
         if (status === 'syncing') {
-            statusEl.classList.add('syncing');
-            statusEl.textContent = 'Syncing...';
+            syncBtn.classList.add('status-syncing');
+            syncBtn.textContent = 'Syncing...';
+            syncBtn.dataset.tooltip = 'Syncing with embed tracker...';
         } else if (status === 'synced') {
-            statusEl.classList.add('synced');
-            statusEl.textContent = 'Synced';
+            syncBtn.classList.add('status-synced');
+            syncBtn.textContent = 'Synced';
+            syncBtn.dataset.tooltip = 'Successfully synced!';
+
+            // Reset to default state after 5 seconds
+            setTimeout(() => {
+                if (syncBtn.classList.contains('status-synced') && !syncBtn.disabled) {
+                    syncBtn.classList.remove('status-synced');
+                    syncBtn.textContent = 'Sync Now';
+                    syncBtn.dataset.tooltip = 'Sync embed now';
+                }
+            }, 5000);
         } else if (status === 'error') {
-            statusEl.classList.add('error');
-            statusEl.textContent = `Error: ${error || 'Unknown'}`;
+            syncBtn.classList.add('status-error');
+            syncBtn.textContent = `Error: ${error}`; // Prepend "Error: " to the reason
+            syncBtn.dataset.tooltip = `Error: ${error}. Click to try again.`;
+
+            // Reset to default state after 5 seconds
+            setTimeout(() => {
+                if (syncBtn.classList.contains('status-error') && !syncBtn.disabled) {
+                    syncBtn.classList.remove('status-error');
+                    syncBtn.textContent = 'Sync Now';
+                    syncBtn.dataset.tooltip = 'Sync embed now';
+                }
+            }, 5000);
+        } else {
+            syncBtn.textContent = 'Sync Now';
+            syncBtn.dataset.tooltip = 'Sync embed now';
         }
     }
 
@@ -3040,6 +3249,7 @@ const processAudioQueue = async () => {
     updateRefreshProgress();
 
     let unsavedCount = 0;
+    let totalProcessed = 0;
     const pendingUIUpdates = new Set();
     let uiUpdateRAF = null;
 
@@ -3141,7 +3351,10 @@ const processAudioQueue = async () => {
         const results = await Promise.all(batch.map(id => analyzeOne(id)));
 
         for (const found of results) {
-            if (found) unsavedCount++;
+            if (found) {
+                unsavedCount++;
+                totalProcessed++;
+            }
         }
 
         updateRefreshProgress();
@@ -3177,6 +3390,11 @@ const processAudioQueue = async () => {
     audioAnalysisTotal = 0;
     updateRefreshProgress();
     localStorage.removeItem(AUDIO_ANALYSIS_STATE_KEY);
+
+    // Notify if we processed any items
+    if (totalProcessed > 0) {
+        showNotification('Audio Analysis Complete', `Analyzed ${totalProcessed} audio file${totalProcessed !== 1 ? 's' : ''}.`, 'success');
+    }
 };
 
 const processStarRatingQueue = async () => {
@@ -3187,6 +3405,7 @@ const processStarRatingQueue = async () => {
     updateRefreshProgress();
 
     let unsavedCount = 0;
+    let totalProcessed = 0;
     const pendingUIUpdates = new Set();
     let uiUpdateRAF = null;
 
@@ -3248,7 +3467,10 @@ const processStarRatingQueue = async () => {
 
         const results = await Promise.all(batch.map(id => calculateOne(id)));
         for (const found of results) {
-            if (found) unsavedCount++;
+            if (found) {
+                unsavedCount++;
+                totalProcessed++;
+            }
         }
 
         updateRefreshProgress();
@@ -3281,6 +3503,11 @@ const processStarRatingQueue = async () => {
     starRatingTotal = 0;
     updateRefreshProgress();
     localStorage.removeItem(STAR_RATING_STATE_KEY);
+
+    // Notify if we processed any items
+    if (totalProcessed > 0) {
+        showNotification('Star Rating Complete', `Calculated ${totalProcessed} star rating${totalProcessed !== 1 ? 's' : ''}.`, 'success');
+    }
 };
 
 const arrayMax = (arr) => {
@@ -3623,6 +3850,7 @@ const AudioController = {
         this.audio.addEventListener('error', (e) => {
             console.error('Audio playback error:', e);
             this.isPlaying = false;
+            showNotification('Audio Error', 'Failed to play audio preview.', 'error');
         });
         this.updateVolume();
     },
@@ -4031,10 +4259,17 @@ const refreshLastDirectory = async () => {
             refreshBtn.style.transform = 'scale(1.2)';
             setTimeout(() => refreshBtn.style.transform = '', 200);
         }
+
+        // Show completion notification
+        const scannedCount = streamingScanState?.items?.length || 0;
+        if (scannedCount > 0) {
+            showNotification('Scan Complete', `Found ${scannedCount} beatmap${scannedCount !== 1 ? 's' : ''}.`, 'success');
+        }
     } catch (error) {
         console.error('Refresh failed:', error);
         streamingScanState = null;
         setLoading(false);
+        showNotification('Scan Failed', error.message || 'Failed to scan directory.', 'error');
     } finally {
         if (refreshBtn) refreshBtn.classList.remove('is-refreshing');
     }
@@ -4068,8 +4303,11 @@ const loadBeatmapsByMapper = async () => {
         const onSubmit = async (event) => {
             event.preventDefault();
             const value = input.value.trim();
+            setLoading(true);
+            const processed = await processMapperInput(value);
+            setLoading(false);
             await cleanup();
-            resolve(value || null);
+            resolve(processed || null);
         };
 
         cancelBtn?.addEventListener('click', onCancel, { once: true });
@@ -4179,7 +4417,20 @@ const init = async () => {
         const raw = localStorage.getItem(SETTINGS_STORAGE_KEY);
         if (raw) {
             try {
-                settings = { ...settings, ...JSON.parse(raw) };
+                const parsed = JSON.parse(raw);
+
+                // Migration: Merge old mutually exclusive toggles into new autoRescan + rescanMode
+                if (parsed.autoDetectMaps !== undefined || parsed.autoRescanMapper !== undefined) {
+                    if (parsed.autoRescan === undefined) {
+                        parsed.autoRescan = parsed.autoDetectMaps || parsed.autoRescanMapper || false;
+                        parsed.rescanMode = parsed.autoDetectMaps ? 'all' : 'mapper';
+                        // Clean up old keys
+                        delete parsed.autoDetectMaps;
+                        delete parsed.autoRescanMapper;
+                    }
+                }
+
+                settings = { ...settings, ...parsed };
                 const height = 170; // Forced to 170px
                 VIRTUAL_ITEM_HEIGHT = height + 12;
                 document.documentElement.style.setProperty('--list-item-height', `${height}px`);
@@ -4198,26 +4449,58 @@ const init = async () => {
     };
 
     const updateSettingsUI = () => {
-        const autoDetect = document.querySelector('#autoDetectMaps');
-        const autoRescan = document.querySelector('#autoRescanMapper');
+        const autoRescan = document.querySelector('#autoRescan');
+        const rescanModeMapper = document.querySelector('#rescanModeMapper');
+        const rescanModeAll = document.querySelector('#rescanModeAll');
         const rescanName = document.querySelector('#rescanMapperName');
         const dirLabel = document.querySelector('#songsDirLabel');
+        const autoRescanOptions = document.querySelector('#autoRescanOptions');
+        const mapperRescanConfig = document.querySelector('#mapperRescanConfig');
+        const linkedAliasesContainer = document.querySelector('#linkedAliasesContainer');
+        const linkedAliasesList = document.querySelector('#linkedAliasesList');
 
-        if (autoDetect) autoDetect.checked = settings.autoDetectMaps;
-        if (autoRescan) autoRescan.checked = settings.autoRescanMapper;
+        if (autoRescan) autoRescan.checked = !!settings.autoRescan;
+
+        if (autoRescanOptions) {
+            autoRescanOptions.style.display = settings.autoRescan ? 'block' : 'none';
+        }
+
+        if (rescanModeMapper && rescanModeAll) {
+            if (settings.rescanMode === 'mapper') rescanModeMapper.checked = true;
+            else rescanModeAll.checked = true;
+        }
+
+        if (mapperRescanConfig) {
+            mapperRescanConfig.style.display = (settings.autoRescan && settings.rescanMode === 'mapper') ? 'block' : 'none';
+        }
+
         if (rescanName) {
-            const rescanWrapper = rescanName.closest('.settings-item');
             rescanName.value = settings.rescanMapperName || '';
-            // Keep the stored name for display, but disable the input when auto-detect is enabled.
-            rescanName.disabled = !!settings.autoDetectMaps;
-            if (settings.autoDetectMaps) {
-                rescanName.setAttribute('aria-disabled', 'true');
-                if (rescanWrapper) rescanWrapper.classList.add('is-disabled');
+        }
+
+        // Update aliase tags
+        if (linkedAliasesList && linkedAliasesContainer) {
+            if (settings.mapperAliases && settings.mapperAliases.length > 0) {
+                linkedAliasesContainer.style.display = 'block';
+                linkedAliasesList.innerHTML = settings.mapperAliases.map((name, i) => {
+                    const isIgnored = settings.ignoredAliases?.includes(name.toLowerCase());
+                    const icon = isIgnored
+                        ? '<svg viewBox="0 0 448 512"><path d="M256 80c0-8.8-7.2-16-16-16s-16 7.2-16 16V240H64c-8.8 0-16 7.2-16 16s7.2 16 16 16H224V432c0 8.8 7.2 16 16 16s16-7.2 16-16V272H400c8.8 0 16-7.2 16-16s-7.2-16-16-16H256V80z"/></svg>' // Plus
+                        : '<svg viewBox="0 0 448 512"><path d="M432 256c0 17.7-14.3 32-32 32L48 288c-17.7 0-32-14.3-32-32s14.3-32 32-32l352 0c17.7 0 32 14.3 32 32z"/></svg>'; // Minus
+                    return `
+                        <div class="alias-tag ${i === 0 ? 'is-primary' : ''} ${isIgnored ? 'is-ignored' : ''}" data-name="${name}">
+                            <span>${name}</span>
+                            <div class="alias-tag-icon">
+                                ${icon}
+                            </div>
+                        </div>
+                    `;
+                }).join('');
             } else {
-                rescanName.removeAttribute('aria-disabled');
-                if (rescanWrapper) rescanWrapper.classList.remove('is-disabled');
+                linkedAliasesContainer.style.display = 'none';
             }
         }
+
         if (dirLabel) dirLabel.textContent = settings.songsDir || 'Not selected';
 
         const ignoreStartAndBreaks = document.querySelector('#ignoreStartAndBreaks');
@@ -4413,8 +4696,10 @@ const init = async () => {
                     // Visual feedback
                     userIdDisplay.classList.add('copied');
                     setTimeout(() => userIdDisplay.classList.remove('copied'), 1500);
+                    showNotification('Copied', 'User ID copied to clipboard.', 'success');
                 } catch (e) {
                     console.error('Failed to copy user ID:', e);
+                    showNotification('Copy Failed', 'Could not copy user ID.', 'error');
                 }
             }
         };
@@ -4436,8 +4721,10 @@ const init = async () => {
                     await navigator.clipboard.writeText(settings.embedApiKey);
                     apiKeyDisplay.classList.add('copied');
                     setTimeout(() => apiKeyDisplay.classList.remove('copied'), 1500);
+                    showNotification('Copied', 'API key copied to clipboard.', 'success');
                 } catch (e) {
                     console.error('Failed to copy API key:', e);
+                    showNotification('Copy Failed', 'Could not copy API key.', 'error');
                 }
             }
         };
@@ -4460,8 +4747,10 @@ const init = async () => {
                     await navigator.clipboard.writeText(url);
                     embedUrlDisplay.classList.add('copied');
                     setTimeout(() => embedUrlDisplay.classList.remove('copied'), 1500);
+                    showNotification('Copied', 'Embed URL copied to clipboard.', 'success');
                 } catch (e) {
                     console.error('Failed to copy embed URL:', e);
+                    showNotification('Copy Failed', 'Could not copy embed URL.', 'error');
                 }
             }
         };
@@ -4478,6 +4767,18 @@ const init = async () => {
     const embedSyncNowBtn = document.querySelector('#embedSyncNowBtn');
     if (embedSyncNowBtn) {
         embedSyncNowBtn.addEventListener('click', triggerManualSync);
+    }
+
+    // Regenerate API key button
+    const regenerateApiKeyBtn = document.querySelector('#regenerateApiKeyBtn');
+    if (regenerateApiKeyBtn) {
+        regenerateApiKeyBtn.addEventListener('click', () => {
+            settings.embedApiKey = generateApiKey();
+            settings.embedLastSynced = null;
+            persistSettings();
+            updateSettingsUI();
+            showNotification('API Key Reset', 'A new API key has been generated and ready for sync.', 'success');
+        });
     }
 
     // Embed settings toggles
@@ -4499,111 +4800,26 @@ const init = async () => {
                     settings.songsDir = dir;
                     saveSettings();
                     updateSettingsUI();
+                    showNotification('Directory Set', 'Songs folder has been updated.', 'success');
                 }
             }
         });
     }
 
     // Generic Setting Toggles
-    ['autoDetectMaps', 'autoRescanMapper', 'ignoreStartAndBreaks', 'ignoreGuestDifficulties'].forEach(id => {
+    ['autoRescan', 'ignoreStartAndBreaks', 'ignoreGuestDifficulties'].forEach(id => {
         const el = document.getElementById(id);
         if (el) {
             el.addEventListener('change', (e) => {
                 const checked = e.target.checked;
-                const prevAutoDetect = !!settings.autoDetectMaps;
-                const prevAutoRescan = !!settings.autoRescanMapper;
-
-                // Make the two startup toggles mutually exclusive: when one is enabled, disable the other.
-                if (id === 'autoDetectMaps' && checked) {
-                    settings.autoRescanMapper = false;
-                    const otherEl = document.getElementById('autoRescanMapper');
-                    if (otherEl) otherEl.checked = false;
-                } else if (id === 'autoRescanMapper' && checked) {
-                    settings.autoDetectMaps = false;
-                    const otherEl = document.getElementById('autoDetectMaps');
-                    if (otherEl) otherEl.checked = false;
-                }
-
                 settings[id] = checked;
-                saveSettings();
-                // Reflect updated UI state immediately (disables mapper input if needed)
+
+                persistSettings();
                 try { updateSettingsUI(); } catch (e) { }
 
-                // If we just switched from detecting all maps to rescan-by-mapper,
-                // clear the current list and perform a mapper-only rescan immediately.
-                if (id === 'autoRescanMapper' && checked && prevAutoDetect) {
-                    // Preserve known durations/highlights before clearing the visible list
-                    const preserved = new Map();
-                    beatmapItems.forEach(item => {
-                        if (item && item.filePath && typeof item.durationMs === 'number') preserved.set(item.filePath, item);
-                    });
-
-                    // Clear visible list and model (preserve todo/completed lists)
-                    beatmapItems = [];
-                    updateTabCounts();
-                    if (listContainer) listContainer.innerHTML = '';
-                    updateEmptyState(listContainer);
-                    scheduleSave();
-
-                    // Only trigger a rescan if we have an effective mapper and a songs dir
-                    const mapper = getEffectiveMapperName();
-                    const targetDir = settings.songsDir || lastScannedDirectory;
-                    if (mapper && targetDir && window.beatmapApi?.scanDirectoryOsuFiles) {
-                        (async () => {
-                            try {
-                                const knownFiles = {};
-                                preserved.forEach((item, filePath) => {
-                                    if (item && typeof item.dateModified === 'number') knownFiles[filePath] = item.dateModified;
-                                });
-                                const scanDone = startStreamingScan(preserved);
-                                await window.beatmapApi.scanDirectoryOsuFiles(targetDir, mapper, knownFiles);
-                                await scanDone;
-                            } catch (err) {
-                                console.error('Mapper rescan after toggle failed:', err);
-                                streamingScanState = null;
-                                setLoading(false);
-                            }
-                        })();
-                    }
-                }
-
-                // If we just switched from mapper-only scanning to detect-all,
-                // clear the current list and perform a full folder rescan immediately.
-                if (id === 'autoDetectMaps' && checked && prevAutoRescan) {
-                    // Preserve known durations/highlights before clearing the visible list
-                    const preserved = new Map();
-                    beatmapItems.forEach(item => {
-                        if (item && item.filePath && typeof item.durationMs === 'number') preserved.set(item.filePath, item);
-                    });
-
-                    // Clear visible list and model (preserve todo/completed lists)
-                    beatmapItems = [];
-                    updateTabCounts();
-                    if (listContainer) listContainer.innerHTML = '';
-                    updateEmptyState(listContainer);
-                    scheduleSave();
-
-                    const targetDir = settings.songsDir || lastScannedDirectory;
-                    if (targetDir && window.beatmapApi?.scanDirectoryOsuFiles) {
-                        (async () => {
-                            try {
-                                const knownFiles = {};
-                                preserved.forEach((item, filePath) => {
-                                    if (item && typeof item.dateModified === 'number') knownFiles[filePath] = item.dateModified;
-                                });
-                                const scanDone = startStreamingScan(preserved);
-                                await window.beatmapApi.scanDirectoryOsuFiles(targetDir, null, knownFiles);
-                                await scanDone;
-                            } catch (err) {
-                                console.error('Full rescan after toggle failed:', err);
-                                streamingScanState = null;
-                                setLoading(false);
-                            }
-                        })();
-                    }
-                }
-
-                if (id === 'ignoreStartAndBreaks') {
+                if (id === 'autoRescan' && checked) {
+                    refreshLastDirectory();
+                } else if (id === 'ignoreStartAndBreaks') {
                     beatmapItems = beatmapItems.map(item => ({
                         ...item,
                         progress: computeProgress(item.highlights)
@@ -4612,6 +4828,36 @@ const init = async () => {
                 } else if (id === 'ignoreGuestDifficulties') {
                     updateTabCounts();
                     renderFromState();
+                }
+            });
+        }
+    });
+
+    // Rescan Mode Radios
+    ['rescanModeMapper', 'rescanModeAll'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) {
+            el.addEventListener('change', (e) => {
+                if (e.target.checked) {
+                    const mode = e.target.value;
+                    const prevMode = settings.rescanMode;
+                    settings.rescanMode = mode;
+                    persistSettings();
+                    try { updateSettingsUI(); } catch (e) { }
+
+                    // Trigger refresh if we switched modes while autoRescan is on
+                    if (settings.autoRescan && prevMode !== mode) {
+                        // When switching from "All Maps" to "Specific Mapper", clear the list
+                        // so that we only see the targeted mapper's maps after rescan.
+                        if (mode === 'mapper' && prevMode === 'all') {
+                            beatmapItems = [];
+                            updateTabCounts();
+                            if (listContainer) listContainer.innerHTML = '';
+                            updateEmptyState(listContainer);
+                            saveToStorage();
+                        }
+                        refreshLastDirectory();
+                    }
                 }
             });
         }
@@ -4642,15 +4888,76 @@ const init = async () => {
     }
 
 
+    // Alias Tag Click Listener (Toggle Ignore)
+    const linkedAliasesList = document.querySelector('#linkedAliasesList');
+    if (linkedAliasesList) {
+        linkedAliasesList.addEventListener('click', (e) => {
+            const tag = e.target.closest('.alias-tag');
+            if (!tag) return;
+
+            const name = tag.dataset.name.toLowerCase();
+            if (!settings.ignoredAliases) settings.ignoredAliases = [];
+
+            const index = settings.ignoredAliases.indexOf(name);
+            if (index > -1) {
+                settings.ignoredAliases.splice(index, 1);
+            } else {
+                settings.ignoredAliases.push(name);
+            }
+
+            persistSettings();
+            updateSettingsUI();
+
+            // Refresh list if autoRescan is on
+            if (settings.autoRescan && settings.rescanMode === 'mapper') {
+                refreshLastDirectory();
+            }
+        });
+    }
+
     // Rescan Mapper Name Input
     let rescanMapperTimer = null;
     if (rescanNameInput) {
         rescanNameInput.addEventListener('input', (e) => {
-            settings.rescanMapperName = e.target.value.trim();
+            const value = e.target.value.trim();
+            const isUrl = value.includes('osu.ppy.sh/users/') || value.includes('osu.ppy.sh/u/');
+            const isId = /^\d+$/.test(value);
+
+            settings.rescanMapperName = value;
             saveSettings();
 
             if (rescanMapperTimer) clearTimeout(rescanMapperTimer);
             rescanMapperTimer = setTimeout(async () => {
+                if (!value) {
+                    // Input cleared: Reset all profile-related scanning state
+                    settings.mapperAliases = [];
+                    settings.ignoredAliases = [];
+                    settings.userId = null;
+                    settings.rescanMapperName = '';
+                    settings.embedApiKey = null;
+                    settings.embedLastSynced = null;
+                    saveSettings();
+
+                    beatmapItems = [];
+                    updateTabCounts();
+                    if (listContainer) listContainer.innerHTML = '';
+                    updateEmptyState(listContainer);
+                    saveToStorage();
+
+                    updateSettingsUI();
+                    return;
+                }
+
+                // Only attempt processMapperInput if it's a URL or a new ID.
+                if (isUrl || (isId && value !== settings.userId?.toString())) {
+                    const processed = await processMapperInput(value);
+                    if (processed && processed !== value) {
+                        settings.rescanMapperName = processed;
+                        saveSettings();
+                        updateSettingsUI();
+                    }
+                }
+
                 const currentListContainer = document.querySelector('#listContainer');
                 if (currentListContainer) currentListContainer.innerHTML = '';
 
@@ -4677,8 +4984,9 @@ const init = async () => {
                     setLoading(false);
                     updateTabCounts();
                     renderFromState();
+                    showNotification('Rescan Failed', err.message || 'Failed to rescan for maps.', 'error');
                 }
-            }, 500);
+            }, 800);
         });
     }
 
@@ -4811,6 +5119,7 @@ const init = async () => {
             updateEmptyState(listContainer);
             renderFromState();
             saveToStorage();
+            showNotification('Cleared', 'All beatmaps have been removed.', 'success');
         });
     }
 
@@ -5232,7 +5541,10 @@ const init = async () => {
                             event.preventDefault();
                             const value = input.value.trim();
                             if (value) {
-                                settings.rescanMapperName = value;
+                                setLoading(true);
+                                const processed = await processMapperInput(value);
+                                setLoading(false);
+                                settings.rescanMapperName = processed;
                                 saveSettings();
                                 updateSettingsUI();
                             }
@@ -5283,7 +5595,10 @@ const init = async () => {
                     event.preventDefault();
                     const value = input.value.trim();
                     if (value) {
-                        settings.rescanMapperName = value;
+                        setLoading(true);
+                        const processed = await processMapperInput(value);
+                        setLoading(false);
+                        settings.rescanMapperName = processed;
                         saveSettings();
                         updateSettingsUI();
                     }
@@ -5335,7 +5650,7 @@ const init = async () => {
                 dialog.addEventListener('cancel', onCancel, { once: true });
             });
         }
-        if (settings.rescanMapperName && settings.songsDir) {
+        if (settings.autoRescan && settings.songsDir) {
             await refreshLastDirectory();
         }
     }

@@ -77,6 +77,7 @@
     getVersion: () => invoke('get_app_version'),
     checkForUpdates: () => invoke('check_for_updates'),
     openExternalUrl: (url) => invoke('open_external_url', { url }),
+    getOsuUserData: (urlOrId) => invoke('get_osu_user_data', { urlOrId }),
   };
 
   window.embedSyncApi = window.embedSyncApi || {

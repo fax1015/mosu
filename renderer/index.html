@@ -199,7 +199,7 @@
     <dialog class="prompt-dialog" id="mapperPrompt">
         <form method="dialog" class="prompt-dialog-form">
             <label class="prompt-dialog-label" for="mapperNameInput">Enter the mapper name:</label>
-            <input class="prompt-dialog-input" id="mapperNameInput" type="text" placeholder="Mapper name..."
+            <input class="prompt-dialog-input" id="mapperNameInput" type="text" placeholder="Mapper name or osu! URL..."
                 autocomplete="off" />
             <div class="prompt-dialog-actions">
                 <button type="button" class="secondary-button" id="mapperPromptCancel">Cancel</button>
@@ -256,43 +256,64 @@
                 </div>
                 <div class="settings-item">
                     <div class="settings-info">
-                        <p class="settings-label">Auto-rescan by mapper on app startup</p>
-                        <p class="settings-description">Automatically scan for new maps from a specific mapper.</p>
+                        <p class="settings-label">Auto-rescan on startup</p>
+                        <p class="settings-description">Automatically scan for new maps when the app starts.</p>
                     </div>
                     <label class="switch">
-                        <input type="checkbox" id="autoRescanMapper">
+                        <input type="checkbox" id="autoRescan">
                         <span class="slider"></span>
                     </label>
                 </div>
-                <div class="settings-item is-indented">
-                    <div class="settings-info">
-                        <p class="settings-label">Mapper name</p>
-                        <p class="settings-description">The mapper name used for scanning and refreshing.</p>
+
+                <div id="autoRescanOptions" class="settings-sub-group" style="display: none;">
+                    <div class="settings-item is-nested">
+                        <div class="settings-info">
+                            <p class="settings-label">Rescan Mode</p>
+                        </div>
+                        <div class="radio-group">
+                            <label class="radio-label">
+                                <input type="radio" name="rescanMode" value="mapper" id="rescanModeMapper">
+                                <span>Specific Mapper</span>
+                            </label>
+                            <label class="radio-label">
+                                <input type="radio" name="rescanMode" value="all" id="rescanModeAll">
+                                <span>All Maps</span>
+                            </label>
+                        </div>
                     </div>
-                    <input type="text" class="control-input" id="rescanMapperName" placeholder="Mapper name...">
-                </div>
-                <div class="settings-item is-indented">
-                    <div class="settings-info">
-                        <p class="settings-label">Hide guest difficulties in your own mapsets</p>
-                        <p class="settings-description">When enabled, hide selected mapper's maps with difficulty
-                            names
-                            that contain "'s" (e.g., "guest's Extra"). May not be 100% accurate.</p>
+
+                    <div id="mapperRescanConfig" style="display: none;">
+                        <div class="settings-item is-nested">
+                            <div class="settings-info">
+                                <p class="settings-label">osu! profile link</p>
+                                <p class="settings-description">The profile link used for scanning beatmaps.</p>
+                            </div>
+                            <input type="text" class="control-input" id="rescanMapperName"
+                                placeholder="Paste osu! profile URL...">
+                        </div>
+
+                        <div class="settings-item is-nested" id="linkedAliasesContainer" style="display: none;">
+                            <div class="settings-info">
+                                <p class="settings-label">Linked Aliases</p>
+                                <p class="settings-description">The app will look for maps from any of these names:</p>
+                                <div id="linkedAliasesList" class="alias-tag-container">
+                                    <!-- Tags populated by JS -->
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="settings-item is-nested">
+                            <div class="settings-info">
+                                <p class="settings-label">Hide guest difficulties in your own mapsets</p>
+                                <p class="settings-description">Hide maps with difficulty names containing "'s" (e.g.,
+                                    "guest's Extra") when they appear in your folders.</p>
+                            </div>
+                            <label class="switch">
+                                <input type="checkbox" id="ignoreGuestDifficulties">
+                                <span class="slider"></span>
+                            </label>
+                        </div>
                     </div>
-                    <label class="switch">
-                        <input type="checkbox" id="ignoreGuestDifficulties">
-                        <span class="slider"></span>
-                    </label>
-                </div>
-                <div class="settings-item">
-                    <div class="settings-info">
-                        <p class="settings-label">Auto-detect new maps on app startup</p>
-                        <p class="settings-description">Automatically add new maps when new folders are detected in
-                            the songs directory.</p>
-                    </div>
-                    <label class="switch">
-                        <input type="checkbox" id="autoDetectMaps">
-                        <span class="slider"></span>
-                    </label>
                 </div>
             </div>
             <div class="settings-section">
@@ -323,15 +344,23 @@
                 <h3 class="settings-section-title">Embed Sync</h3>
                 <div class="settings-item">
                     <div class="settings-info">
+                        <p class="settings-label">Sync Status</p>
+                        <p class="settings-description" id="embedLastSynced">Not synced yet</p>
+                    </div>
+                    <button type="button" class="secondary-button" id="embedSyncNowBtn"
+                        data-tooltip="Sync embed now">Sync Now</button>
+                </div>
+                <div class="settings-item">
+                    <div class="settings-info">
                         <p class="settings-label">Your User ID</p>
                         <p class="settings-description">Use this ID to sync your todo list to the embed page. Click to
                             copy.</p>
                         <div class="user-id-display" id="userIdDisplay" tabindex="0" role="button"
                             aria-label="Copy user ID">
                             <code id="userIdValue">Loading...</code>
-                            <svg class="copy-icon" viewBox="0 0 448 512" width="14" height="14">
-                                <path
-                                    d="M384 336H192c-8.8 0-16-7.2-16-16V64c0-8.8 7.2-16 16-16h192c8.8 0 16 7.2 16 16v256c0 8.8-7.2 16-16 16zm32-288V352c0 17.7-14.3 32-32 32H192c-17.7 0-32-14.3-32-32V48c0-17.7 14.3-32 32-32h192c17.7 0 32 14.3 32 32zM96 480h256c17.7 0 32-14.3 32-32V128h32v320c0 35.3-28.7 64-64 64H96c-35.3 0-64-28.7-64-64V128h32v320c0 17.7 14.3 32 32 32z" />
+                            <svg class="copy-icon" viewBox="0 0 24 24" width="14" height="14">
+                                <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
                             </svg>
                         </div>
                     </div>
@@ -344,9 +373,25 @@
                         <div class="user-id-display" id="apiKeyDisplay" tabindex="0" role="button"
                             aria-label="Copy API key">
                             <code id="apiKeyValue">Not generated</code>
-                            <svg class="copy-icon" viewBox="0 0 448 512" width="14" height="14">
-                                <path
-                                    d="M384 336H192c-8.8 0-16-7.2-16-16V64c0-8.8 7.2-16 16-16h192c8.8 0 16 7.2 16 16v256c0 8.8-7.2 16-16 16zm32-288V352c0 17.7-14.3 32-32 32H192c-17.7 0-32-14.3-32-32V48c0-17.7 14.3-32 32-32h192c17.7 0 32 14.3 32 32zM96 480h256c17.7 0 32-14.3 32-32V128h32v320c0 35.3-28.7 64-64 64H96c-35.3 0-64-28.7-64-64V128h32v320c0 17.7 14.3 32 32 32z" />
+                            <svg class="copy-icon" viewBox="0 0 24 24" width="14" height="14">
+                                <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                            </svg>
+                        </div>
+                    </div>
+                    <button type="button" class="secondary-button" id="regenerateApiKeyBtn"
+                        data-tooltip="Regenerate API key">Reset Key</button>
+                </div>
+                <div class="settings-item">
+                    <div class="settings-info">
+                        <p class="settings-label">Embed URL</p>
+                        <p class="settings-description">Use this URL to embed your tracker on other sites.</p>
+                        <div class="user-id-display" id="embedUrlDisplay" tabindex="0" role="button"
+                            aria-label="Copy embed URL">
+                            <code id="embedUrlValue">Loading...</code>
+                            <svg class="copy-icon" viewBox="0 0 24 24" width="14" height="14">
+                                <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
                             </svg>
                         </div>
                     </div>
@@ -380,29 +425,6 @@
                         <input type="checkbox" id="embedShowProgressStats">
                         <span class="slider"></span>
                     </label>
-                </div>
-                <div class="settings-item">
-                    <div class="settings-info">
-                        <p class="settings-label">Sync Status</p>
-                        <p class="settings-description" id="embedLastSynced">Not synced yet</p>
-                        <span class="embed-sync-status" id="embedSyncStatus"></span>
-                    </div>
-                    <button type="button" class="secondary-button" id="embedSyncNowBtn"
-                        data-tooltip="Sync embed now">Sync Now</button>
-                </div>
-                <div class="settings-item">
-                    <div class="settings-info">
-                        <p class="settings-label">Embed URL</p>
-                        <p class="settings-description">Use this URL to embed your tracker on other sites.</p>
-                        <div class="user-id-display" id="embedUrlDisplay" tabindex="0" role="button"
-                            aria-label="Copy embed URL">
-                            <code id="embedUrlValue">Loading...</code>
-                            <svg class="copy-icon" viewBox="0 0 448 512" width="14" height="14">
-                                <path
-                                    d="M384 336H192c-8.8 0-16-7.2-16-16V64c0-8.8 7.2-16 16-16h192c8.8 0 16 7.2 16 16v256c0 8.8-7.2 16-16 16zm32-288V352c0 17.7-14.3 32-32 32H192c-17.7 0-32-14.3-32-32V48c0-17.7 14.3-32 32-32h192c17.7 0 32 14.3 32 32zM96 480h256c17.7 0 32-14.3 32-32V128h32v320c0 35.3-28.7 64-64 64H96c-35.3 0-64-28.7-64-64V128h32v320c0 17.7 14.3 32 32 32z" />
-                            </svg>
-                        </div>
-                    </div>
                 </div>
             </div>
         </div>
@@ -466,6 +488,11 @@
                 </li>
                 <h4>sort by star rating</h4>
                 <li>- i added another package just for this (rosu-pp)
+                </li>
+                <h4>alias searching</h4>
+                <li>- the app now searches for all previous names of a mapper
+                    <br><br>
+                    - you can change which names are used in the settings
                 </li>
             </ul>
         </div>

@@ -104,6 +104,13 @@ struct EmbedSyncPayload {
     error: Option<String>,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OsuUserData {
+    id: String,
+    names: Vec<String>,
+}
+
 #[derive(Debug)]
 struct ParsedOsu {
     metadata: ParsedMetadata,
@@ -520,9 +527,10 @@ fn scan_single_osu_file(
     file_path: &str,
     mtime_ms: f64,
     known: &HashMap<String, f64>,
-    mapper: &str,
-    has_mapper: bool,
+    mappers: &[String],
 ) -> Option<ScanFilePayload> {
+    let has_mapper = !mappers.is_empty();
+
     // Fast path: check cache by mtime
     if let Some(cached_mtime) = known.get(file_path) {
         if (cached_mtime - mtime_ms).abs() < 0.5 {
@@ -537,7 +545,7 @@ fn scan_single_osu_file(
                     let (creator, version) = parse_header_creator_and_version(&header);
                     let creator_lower = creator.to_ascii_lowercase();
                     let version_lower = version.to_ascii_lowercase();
-                    if !creator_lower.contains(mapper) && !version_lower.contains(mapper) {
+                    if !mappers.iter().any(|m| creator_lower.contains(m) || version_lower.contains(m)) {
                         return None;
                     }
                 } else {
@@ -570,7 +578,7 @@ fn scan_single_osu_file(
     if has_mapper {
         let creator = parsed.metadata.creator.to_ascii_lowercase();
         let version = parsed.metadata.version.to_ascii_lowercase();
-        if !creator.contains(mapper) && !version.contains(mapper) {
+        if !mappers.iter().any(|m| creator.contains(m) || version.contains(m)) {
             return None;
         }
     }
@@ -605,7 +613,7 @@ struct ScanCompleteEvent {
 
 /// Quick header-only check to see if a file matches the mapper filter.
 /// Returns true if the file should be included (matches mapper or no mapper filter).
-fn file_matches_mapper(file_path: &str, mapper: &str) -> bool {
+fn file_matches_mapper(file_path: &str, mappers: &[String]) -> bool {
     let path = Path::new(file_path);
     if let Ok(file) = fs::File::open(path) {
         let mut reader = BufReader::with_capacity(8192, file);
@@ -615,7 +623,7 @@ fn file_matches_mapper(file_path: &str, mapper: &str) -> bool {
         let (creator, version) = parse_header_creator_and_version(&header);
         let creator_lower = creator.to_ascii_lowercase();
         let version_lower = version.to_ascii_lowercase();
-        return creator_lower.contains(mapper) || version_lower.contains(mapper);
+        return mappers.iter().any(|m| creator_lower.contains(m) || version_lower.contains(m));
     }
     false
 }
@@ -646,14 +654,21 @@ fn scan_directory_streaming(
     }
 
     let known = Arc::new(known_files.unwrap_or_default());
-    let mapper = Arc::new(mapper_name.unwrap_or_default().trim().to_ascii_lowercase());
-    let has_mapper = !mapper.is_empty();
+    let mappers_raw = mapper_name.unwrap_or_default();
+    let mappers: Arc<Vec<String>> = Arc::new(
+        mappers_raw
+            .split(',')
+            .map(|s| s.trim().to_ascii_lowercase())
+            .filter(|s| !s.is_empty())
+            .collect()
+    );
+    let has_mapper = !mappers.is_empty();
 
     // When mapper filter is active, pre-count matching files for accurate progress
     let total_for_progress = if has_mapper {
-        let mapper_str = mapper.as_str();
+        let mappers_ref = mappers.as_ref();
         osu_entries.iter()
-            .filter(|(path, _)| file_matches_mapper(path, mapper_str))
+            .filter(|(path, _)| file_matches_mapper(path, mappers_ref))
             .count()
     } else {
         osu_entries.len()
@@ -679,7 +694,7 @@ fn scan_directory_streaming(
         for chunk in osu_entries.chunks(chunk_size) {
             let chunk_entries: Vec<_> = chunk.to_vec();
             let known = Arc::clone(&known);
-            let mapper = Arc::clone(&mapper);
+            let mappers = Arc::clone(&mappers);
             let batch_counter = Arc::clone(&batch_counter);
             let total_emitted = Arc::clone(&total_emitted);
             let total_for_progress = Arc::clone(&total_for_progress_arc);
@@ -692,8 +707,7 @@ fn scan_directory_streaming(
                         file_path,
                         *mtime_ms,
                         &known,
-                        mapper.as_str(),
-                        has_mapper,
+                        mappers.as_ref(),
                     ) {
                         local_batch.push(payload);
                     }
@@ -771,8 +785,14 @@ fn scan_directory_internal(
     }
 
     let known = Arc::new(known_files.unwrap_or_default());
-    let mapper = Arc::new(mapper_name.unwrap_or_default().trim().to_ascii_lowercase());
-    let has_mapper = !mapper.is_empty();
+    let mappers_raw = mapper_name.unwrap_or_default();
+    let mappers: Arc<Vec<String>> = Arc::new(
+        mappers_raw
+            .split(',')
+            .map(|s| s.trim().to_ascii_lowercase())
+            .filter(|s| !s.is_empty())
+            .collect()
+    );
 
     let parallelism = std::thread::available_parallelism()
         .map(|count| count.get())
@@ -789,7 +809,7 @@ fn scan_directory_internal(
         for chunk in osu_entries.chunks(chunk_size) {
             let chunk_entries: Vec<_> = chunk.to_vec();
             let known = Arc::clone(&known);
-            let mapper = Arc::clone(&mapper);
+            let mappers = Arc::clone(&mappers);
 
             handles.push(scope.spawn(move || {
                 let mut out = Vec::with_capacity(chunk_entries.len());
@@ -798,8 +818,7 @@ fn scan_directory_internal(
                         file_path,
                         *mtime_ms,
                         &known,
-                        mapper.as_str(),
-                        has_mapper,
+                        mappers.as_ref(),
                     ) {
                         out.push(payload);
                     }
@@ -1203,6 +1222,102 @@ async fn embed_sync(url: String, api_key: String, data: Value) -> EmbedSyncPaylo
     }
 }
 
+#[tauri::command]
+async fn get_osu_user_data(url_or_id: String) -> Result<OsuUserData, String> {
+    println!("[mosu] Fetching osu! user data for: {}", url_or_id);
+    let id_str = if url_or_id.starts_with("http") {
+        url_or_id
+            .split('/')
+            .last()
+            .unwrap_or("")
+            .split('?')
+            .next()
+            .unwrap_or("")
+            .to_string()
+    } else {
+        url_or_id
+    };
+
+    if id_str.is_empty() {
+        return Err("Invalid osu! user URL or ID".to_string());
+    }
+    
+    println!("[mosu] Normalized user ID: {}", id_str);
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(15))
+        .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let url = format!("https://osu.ppy.sh/users/{}", id_str);
+    let response = client.get(&url).send().await.map_err(|e| {
+        println!("[mosu] Request failed: {}", e);
+        e.to_string()
+    })?;
+    
+    if !response.status().is_success() {
+        println!("[mosu] Profile fetch returned status: {}", response.status());
+        return Err(format!("Failed to fetch profile: {}", response.status()));
+    }
+
+    let html = response.text().await.map_err(|e| e.to_string())?;
+    let document = scraper::Html::parse_document(&html);
+    
+    // Modern osu! profiles store data in a JSON blob within a .js-react element
+    let react_selector = scraper::Selector::parse(".js-react").map_err(|_| "Selector error")?;
+    let element = document.select(&react_selector)
+        .find(|e| e.value().attr("data-initial-data").is_some())
+        .ok_or_else(|| {
+            println!("[mosu] Could not find .js-react element with data-initial-data");
+            "Could not find profile data on page".to_string()
+        })?;
+    
+    let json_str = element.value().attr("data-initial-data").unwrap();
+    let data: Value = serde_json::from_str(json_str).map_err(|e| {
+        println!("[mosu] JSON parse error: {}", e);
+        format!("Failed to parse profile JSON: {}", e)
+    })?;
+    
+    // The structure is usually { "user": { ... } }
+    let user = data.get("user").ok_or_else(|| {
+        println!("[mosu] 'user' key not found in JSON data");
+        "User data not found in profile".to_string()
+    })?;
+    
+    let actual_id = user.get("id")
+        .and_then(|v| {
+            if let Some(i) = v.as_i64() { Some(i.to_string()) }
+            else if let Some(s) = v.as_str() { Some(s.to_string()) }
+            else { None }
+        })
+        .ok_or_else(|| "User ID not found in JSON".to_string())?;
+        
+    let username = user.get("username")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "Username not found in JSON".to_string())?;
+    
+    let mut names = vec![username.to_string()];
+    println!("[mosu] Found primary username: {}", username);
+    
+    if let Some(previous) = user.get("previous_usernames").and_then(|v| v.as_array()) {
+        for name_val in previous {
+            if let Some(name) = name_val.as_str() {
+                if !name.is_empty() {
+                    names.push(name.to_string());
+                }
+            }
+        }
+    }
+
+    // Remove duplicates while preserving order (primary name stays first)
+    let mut seen = std::collections::HashSet::new();
+    names.retain(|n| seen.insert(n.to_lowercase()));
+    println!("[mosu] Total unique names found (order preserved): {:?}", names);
+
+    Ok(OsuUserData { id: actual_id, names })
+}
+
 fn main() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
@@ -1227,6 +1342,7 @@ fn main() {
             embed_sync,
             get_audio_duration,
             calculate_star_rating,
+            get_osu_user_data,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
