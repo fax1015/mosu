@@ -43,6 +43,162 @@ const getStarRatingColor = (rating) => {
     return `rgb(${finalR}, ${finalG}, ${finalB})`;
 };
 
+const TooltipManager = {
+    element: null,
+    timeout: null,
+    currentTrigger: null,
+    delay: 500, // Balanced delay for feel
+    observer: null,
+
+    init() {
+        this.element = document.getElementById('mosuCustomTooltip');
+        if (!this.element) {
+            this.element = document.createElement('div');
+            this.element.id = 'mosuCustomTooltip';
+            this.element.className = 'custom-tooltip';
+            document.body.appendChild(this.element);
+        }
+
+        // MutationObserver to watch for tooltip text changes on the active trigger
+        this.observer = new MutationObserver((mutations) => {
+            for (const mutation of mutations) {
+                if (mutation.type === 'attributes' && mutation.attributeName === 'data-tooltip') {
+                    this.updateContent();
+                }
+            }
+        });
+
+        // Event delegation for all elements with data-tooltip
+        document.addEventListener('mouseover', (e) => {
+            const trigger = e.target.closest('[data-tooltip]');
+            if (trigger && trigger !== this.currentTrigger) {
+                this.startTimer(trigger);
+            } else if (!trigger && this.currentTrigger) {
+                this.hide();
+            }
+        });
+
+        document.addEventListener('mouseout', (e) => {
+            const trigger = e.target.closest('[data-tooltip]');
+            if (trigger && trigger === this.currentTrigger) {
+                const related = e.relatedTarget;
+                if (!related || !trigger.contains(related)) {
+                    this.hide();
+                }
+            }
+        });
+
+        // Hide on click or scroll
+        document.addEventListener('mousedown', () => this.hide());
+        window.addEventListener('scroll', () => this.hide(), true);
+        window.addEventListener('resize', () => this.hide());
+    },
+
+    startTimer(trigger) {
+        this.clearTimer();
+        this.currentTrigger = trigger;
+        this.timeout = setTimeout(() => {
+            this.show(trigger);
+        }, this.delay);
+    },
+
+    clearTimer() {
+        if (this.timeout) {
+            clearTimeout(this.timeout);
+            this.timeout = null;
+        }
+    },
+
+    show(trigger) {
+        this.observer.disconnect();
+        this.observer.observe(trigger, { attributes: true, attributeFilter: ['data-tooltip'] });
+
+        this.updateContent();
+        this.element.classList.add('visible');
+    },
+
+    updateContent() {
+        if (!this.currentTrigger || !this.element) return;
+        const text = this.currentTrigger.getAttribute('data-tooltip');
+        if (!text) {
+            this.hide();
+            return;
+        }
+
+        this.element.textContent = text;
+
+        // Use requestAnimationFrame to ensure the DOM has updated and we can measure the new size correctly
+        requestAnimationFrame(() => {
+            if (this.currentTrigger) this.updatePosition();
+        });
+    },
+
+    hide() {
+        this.clearTimer();
+        this.observer.disconnect();
+        this.currentTrigger = null;
+        if (this.element) {
+            this.element.classList.remove('visible');
+        }
+    },
+
+    updatePosition() {
+        if (!this.element || !this.currentTrigger) return;
+
+        const triggerRect = this.currentTrigger.getBoundingClientRect();
+
+        // Temporary reset scale to 1 to measure natural width accurately
+        const originalTransform = this.element.style.transform;
+        this.element.style.transform = 'none';
+        this.element.style.display = 'block';
+
+        const tooltipWidth = this.element.offsetWidth;
+        const tooltipHeight = this.element.offsetHeight;
+
+        this.element.style.transform = originalTransform;
+        if (!this.element.classList.contains('visible')) {
+            this.element.style.display = '';
+        }
+
+        let left = triggerRect.left + (triggerRect.width / 2) - (tooltipWidth / 2);
+        let top = triggerRect.top - tooltipHeight - 12; // Increased gap for arrow
+        let isTop = true;
+
+        // Viewport constraints
+        const padding = 16;
+        const winWidth = window.innerWidth;
+
+        if (left < padding) {
+            left = padding;
+        } else if (left + tooltipWidth > winWidth - padding) {
+            left = winWidth - tooltipWidth - padding;
+        }
+
+        // Flip to bottom if it overflows the top
+        if (top < padding) {
+            top = triggerRect.bottom + 12;
+            isTop = false;
+        }
+
+        // Position the arrow to point exactly at the trigger center
+        const arrowLeft = triggerRect.left + (triggerRect.width / 2) - left;
+        this.element.style.setProperty('--arrow-left', `${Math.round(arrowLeft)}px`);
+
+        this.element.classList.toggle('mosu-tooltip--top', isTop);
+        this.element.classList.toggle('mosu-tooltip--bottom', !isTop);
+
+        this.element.style.left = `${Math.round(left)}px`;
+        this.element.style.top = `${Math.round(top)}px`;
+    }
+};
+
+// Initialize Tooltip Manager
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', () => TooltipManager.init());
+} else {
+    TooltipManager.init();
+}
+
 let beatmapItems = [];
 let todoIds = [];
 let doneIds = [];
@@ -53,276 +209,10 @@ let srFilter = { min: 0, max: 10 };
 let pendingTabRenderRaf = 0;
 let groupedRenderPassToken = 0;
 let isWindowResizeInProgress = false;
-let emitFilterStateToUI = () => { };
-let emitSettingsStateToUI = () => { };
-let emitSettingsControlsState = () => { };
-let emitCoreStateToUI = () => { };
-let emitTodoOrderStateToUI = () => { };
-let emitGroupViewStateToUI = () => { };
-let emitItemDetailsStateToUI = () => { };
-let emitViewModelStateToUI = () => { };
-let notifyListUiToUI = () => { };
-let notifyRefreshUiToUI = () => { };
-let listUiState = {
-    isLoading: false,
-    progressVisible: false,
-    progressPct: 0,
-    progressLabel: 'Processing files...',
-    isEmpty: true,
-    showClearAll: false
-};
-let refreshUiState = {
-    isRefreshing: false,
-    isAnalyzing: false,
-    progressPct: 0,
-    tooltip: 'Refresh last directory',
-    isPulsing: false
-};
 
 // Auto-scroll state for dragging
 let autoScrollTimer = null;
 let currentMouseY = 0;
-
-const getFilterStateSnapshot = () => ({
-    viewMode,
-    sortState: { ...sortState },
-    searchQuery,
-    srFilter: { ...srFilter }
-});
-
-// Reusable stable snapshot of the beatmapItems array — only rebuilt when items change.
-let _cachedBeatmapItemsSnapshot = [];
-let _cachedBeatmapItemsSource = null; // reference to last beatmapItems
-
-const getBeatmapItemsSnapshot = () => {
-    if (beatmapItems === _cachedBeatmapItemsSource) {
-        return _cachedBeatmapItemsSnapshot;
-    }
-    _cachedBeatmapItemsSource = beatmapItems;
-    _cachedBeatmapItemsSnapshot = beatmapItems.map((item) => ({
-        id: item.id,
-        title: item.title || '',
-        titleUnicode: item.titleUnicode || '',
-        artist: item.artist || '',
-        artistUnicode: item.artistUnicode || '',
-        creator: item.creator || '',
-        version: item.version || '',
-        beatmapSetID: item.beatmapSetID || '',
-        coverUrl: item.coverUrl || '',
-        coverPath: item.coverPath || '',
-        durationMs: Number(item.durationMs || 0),
-        deadline: (typeof item.deadline === 'number' || item.deadline === null) ? item.deadline : null,
-        targetStarRating: (typeof item.targetStarRating === 'number' || item.targetStarRating === null) ? item.targetStarRating : null,
-        notes: item.notes || '',
-        progress: Number(item.progress || 0),
-        starRating: Number(item.starRating || 0),
-        dateAdded: Number(item.dateAdded || 0),
-        dateModified: Number(item.dateModified || 0),
-    }));
-    return _cachedBeatmapItemsSnapshot;
-};
-
-// Track whether items have actually changed since the last full snapshot was emitted
-let _lastEmittedBeatmapItemsSource = null;
-let _lastEmittedTodoLen = -1;
-let _lastEmittedDoneLen = -1;
-
-const getCoreStateSnapshot = (forceItems = false) => {
-    const itemsChanged =
-        forceItems ||
-        beatmapItems !== _lastEmittedBeatmapItemsSource ||
-        todoIds.length !== _lastEmittedTodoLen ||
-        doneIds.length !== _lastEmittedDoneLen;
-
-    if (itemsChanged) {
-        _lastEmittedBeatmapItemsSource = beatmapItems;
-        _lastEmittedTodoLen = todoIds.length;
-        _lastEmittedDoneLen = doneIds.length;
-    }
-
-    return {
-        // Only include the (expensive) items snapshot when something actually changed.
-        // coreStateService on the Svelte side will skip _beatmapData update if reference is same.
-        beatmapItems: itemsChanged ? getBeatmapItemsSnapshot() : _cachedBeatmapItemsSnapshot,
-        todoIds: itemsChanged ? [...todoIds] : undefined,
-        doneIds: itemsChanged ? [...doneIds] : undefined,
-        _itemsChanged: itemsChanged, // hint for service-side guard
-        viewMode,
-        sortState: { ...sortState },
-        searchQuery,
-        srFilter: { ...srFilter },
-        settings: {
-            ignoreGuestDifficulties: !!settings.ignoreGuestDifficulties,
-            groupMapsBySong: !!settings.groupMapsBySong,
-        },
-        effectiveMapperName: getEffectiveMapperName() || '',
-        itemsToRenderIds: itemsToRender.map((item) => item.id),
-    };
-};
-
-const getTodoOrderSnapshot = () => ({
-    todoIds: [...todoIds],
-    doneIds: [...doneIds]
-});
-
-const getGroupViewSnapshot = () => ({
-    expandedKeys: Array.from(groupedExpandedKeys)
-});
-
-const toItemDetailsSnapshot = (item) => ({
-    id: item?.id || '',
-    deadline: (typeof item?.deadline === 'number' || item?.deadline === null) ? item.deadline : null,
-    targetStarRating: (typeof item?.targetStarRating === 'number' || item?.targetStarRating === null) ? item.targetStarRating : null,
-    notes: item?.notes || ''
-});
-
-let _cachedItemDetailsSnapshot = [];
-let _cachedItemDetailsSource = null;
-const getItemDetailsSnapshot = () => {
-    if (beatmapItems === _cachedItemDetailsSource) return _cachedItemDetailsSnapshot;
-    _cachedItemDetailsSource = beatmapItems;
-    _cachedItemDetailsSnapshot = beatmapItems.map((item) => toItemDetailsSnapshot(item));
-    return _cachedItemDetailsSnapshot;
-};
-
-const getItemDetailsByIdSnapshot = (itemId) => {
-    if (!itemId) return null;
-    const item = beatmapItems.find((entry) => entry.id === itemId);
-    if (!item) return null;
-    return toItemDetailsSnapshot(item);
-};
-
-let _cachedVmSnapshot = null;
-let _cachedVmItemsRef = null;
-let _cachedVmViewMode = null;
-let _cachedVmGrouped = null;
-let _cachedVmExpandedSize = -1;
-
-const getViewModelSnapshot = () => {
-    const groupedMode = !!settings.groupMapsBySong && viewMode === 'all';
-    const expandedSize = groupedExpandedKeys.size;
-
-    // Return cached snapshot when nothing relevant has changed
-    if (
-        _cachedVmSnapshot !== null &&
-        itemsToRender === _cachedVmItemsRef &&
-        viewMode === _cachedVmViewMode &&
-        groupedMode === _cachedVmGrouped &&
-        expandedSize === _cachedVmExpandedSize
-    ) {
-        return _cachedVmSnapshot;
-    }
-
-    _cachedVmItemsRef = itemsToRender;
-    _cachedVmViewMode = viewMode;
-    _cachedVmGrouped = groupedMode;
-    _cachedVmExpandedSize = expandedSize;
-
-    const itemIds = itemsToRender.map((item) => item.id);
-
-    if (!groupedMode) {
-        _cachedVmSnapshot = {
-            viewMode,
-            grouped: false,
-            itemIds,
-            groups: [],
-            expandedKeys: []
-        };
-        return _cachedVmSnapshot;
-    }
-
-    const groups = groupItemsBySong(itemsToRender).map((group) => {
-        const representative = group.items[0] || {};
-        return {
-            key: group.key,
-            representativeId: representative.id || '',
-            itemIds: group.items.map((item) => item.id),
-            count: group.items.length
-        };
-    });
-
-    _cachedVmSnapshot = {
-        viewMode,
-        grouped: true,
-        itemIds,
-        groups,
-        expandedKeys: Array.from(groupedExpandedKeys)
-    };
-    return _cachedVmSnapshot;
-};
-
-const shouldUseSvelteGroupedView = () => {
-    const surface = window.mosuRenderSurface;
-    if (!surface) return false;
-    if (surface.useSvelteGroupedView === true) return true;
-    if (typeof surface.shouldUseSvelteGroupedView === 'function') {
-        try {
-            return !!surface.shouldUseSvelteGroupedView();
-        } catch (error) {
-            return false;
-        }
-    }
-    return false;
-};
-
-const shouldUseSvelteCompletedView = () => {
-    const surface = window.mosuRenderSurface;
-    if (!surface) return false;
-    if (surface.useSvelteCompletedView === true) return true;
-    if (typeof surface.shouldUseSvelteCompletedView === 'function') {
-        try {
-            return !!surface.shouldUseSvelteCompletedView();
-        } catch (error) {
-            return false;
-        }
-    }
-    return false;
-};
-
-const shouldUseSvelteTodoView = () => {
-    const surface = window.mosuRenderSurface;
-    if (!surface) return false;
-    if (surface.useSvelteTodoView === true) return true;
-    if (typeof surface.shouldUseSvelteTodoView === 'function') {
-        try {
-            return !!surface.shouldUseSvelteTodoView();
-        } catch (error) {
-            return false;
-        }
-    }
-    return false;
-};
-
-const shouldUseSvelteAllView = () => {
-    const surface = window.mosuRenderSurface;
-    if (!surface) return false;
-    if (surface.useSvelteAllView === true) return true;
-    if (typeof surface.shouldUseSvelteAllView === 'function') {
-        try {
-            return !!surface.shouldUseSvelteAllView();
-        } catch (error) {
-            return false;
-        }
-    }
-    return false;
-};
-
-const getListUiSnapshot = () => ({
-    isLoading: !!listUiState.isLoading,
-    progressVisible: !!listUiState.progressVisible,
-    progressPct: Number(listUiState.progressPct || 0),
-    progressLabel: listUiState.progressLabel || 'Processing files...',
-    isEmpty: !!listUiState.isEmpty,
-    showClearAll: !!listUiState.showClearAll
-});
-
-const getRefreshUiSnapshot = () => ({
-    isRefreshing: !!refreshUiState.isRefreshing,
-    isAnalyzing: !!refreshUiState.isAnalyzing,
-    progressPct: Number(refreshUiState.progressPct || 0),
-    tooltip: refreshUiState.tooltip || 'Refresh last directory',
-    isPulsing: !!refreshUiState.isPulsing
-});
 
 // Global Date Picker Instance
 const GlobalDatePicker = {
@@ -515,13 +405,75 @@ const generateUserId = () => {
 };
 
 const showNotification = (title, message, type = 'default', duration = 5000) => {
-    if (window.mosuNotifications?.show) {
-        window.mosuNotifications.show(title, message, type, duration);
-        return;
+    let container = document.querySelector('.notification-container');
+    if (!container) {
+        container = document.createElement('div');
+        container.className = 'notification-container';
+        container.setAttribute('popover', 'manual');
+        document.body.appendChild(container);
+
+        // Show the popover so it enters the top layer
+        try {
+            if (container.showPopover) {
+                container.showPopover();
+            }
+        } catch (e) {
+            console.warn('[mosu] Popover API not available for notifications:', e);
+        }
+    } else {
+        // Re-show to bring to top of top layer (above dialogs)
+        try {
+            if (container.showPopover) {
+                container.showPopover();
+            }
+        } catch (e) {
+            // Ignore if already shown
+        }
     }
 
-    const logType = type === 'error' ? 'error' : 'log';
-    console[logType](`[mosu] ${title}: ${message}`);
+    const notification = document.createElement('div');
+    notification.className = `notification is-${type}`;
+
+    let icon = '';
+    if (type === 'success') {
+        icon = `<svg class="notification-icon" viewBox="0 0 512 512"><path fill="var(--success)" d="M256 512A256 256 0 1 0 256 0a256 256 0 1 0 0 512zM369 209L241 337c-9.4 9.4-24.6 9.4-33.9 0l-64-64c-9.4-9.4-9.4-24.6 0-33.9s24.6-9.4 33.9 0l47 47L335 175c9.4-9.4 24.6-9.4 33.9 0s9.4 24.6 0 33.9z"/></svg>`;
+    } else if (type === 'error') {
+        icon = `<svg class="notification-icon" viewBox="0 0 512 512"><path fill="var(--error)" d="M256 512A256 256 0 1 0 256 0a256 256 0 1 0 0 512zm0-384c13.3 0 24 10.7 24 24V264c0 13.3-10.7 24-24 24s-24-10.7-24-24V152c0-13.3 10.7-24 24-24zM224 352a32 32 0 1 1 64 0a32 32 0 1 1 -64 0z"/></svg>`;
+    } else {
+        icon = `<svg class="notification-icon" viewBox="0 0 512 512"><path fill="var(--accent-primary)" d="M256 512A256 256 0 1 0 256 0a256 256 0 1 0 0 512zM216 336h24V272H216c-13.3 0-24-10.7-24-24s10.7-24 24-24h48c13.3 0 24 10.7 24 24v88h8c13.3 0 24 10.7 24 24s-10.7 24-24 24H216c-13.3 0-24-10.7-24-24s10.7-24 24-24zm40-144a32 32 0 1 1 0-64 32 32 0 1 1 0 64z"/></svg>`;
+    }
+
+    const closeBtn = document.createElement('button');
+    closeBtn.className = 'notification-close';
+    closeBtn.innerHTML = `<svg viewBox="0 0 384 512"><path fill="currentColor" d="M342.6 150.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0L192 210.7 86.6 105.4c-12.5-12.5-32.8-12.5-45.3 0s-12.5 32.8 0 45.3L146.7 256 41.4 361.4c-12.5 12.5-12.5 32.8 0 45.3s32.8 12.5 45.3 0L192 301.3 297.4 406.6c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L237.3 256 342.6 150.6z"/></svg>`;
+    closeBtn.setAttribute('aria-label', 'Dismiss');
+    closeBtn.addEventListener('click', () => {
+        notification.classList.remove('is-visible');
+        setTimeout(() => notification.remove(), 300);
+    });
+
+    notification.innerHTML = `
+        ${icon}
+        <div class="notification-content">
+            <div class="notification-title">${title}</div>
+            <div class="notification-message">${message}</div>
+        </div>
+    `;
+
+    notification.appendChild(closeBtn);
+    container.appendChild(notification);
+
+    // Trigger animation
+    setTimeout(() => notification.classList.add('is-visible'), 10);
+
+    // Remove after duration
+    const timeoutId = setTimeout(() => {
+        notification.classList.remove('is-visible');
+        setTimeout(() => notification.remove(), 300);
+    }, duration);
+
+    // Clear timeout if manually closed
+    closeBtn.addEventListener('click', () => clearTimeout(timeoutId), { once: true });
 };
 
 let settings = {
@@ -549,47 +501,6 @@ let settings = {
     embedShowProgressStats: true,
     embedLastSynced: null,
     groupMapsBySong: true
-};
-
-const getSettingsStateSnapshot = () => {
-    const volume = typeof settings.volume === 'number' ? settings.volume : 0.5;
-    const linkedAliases = (settings.mapperAliases || []).map((name, index) => ({
-        name,
-        isPrimary: index === 0,
-        isIgnored: (settings.ignoredAliases || []).includes(String(name).toLowerCase())
-    }));
-
-    return {
-        autoRescan: !!settings.autoRescan,
-        rescanMode: settings.rescanMode || 'mapper',
-        rescanMapperName: settings.rescanMapperName || '',
-        songsDir: settings.songsDir || '',
-        songsDirLabel: settings.songsDir || 'Not selected',
-        ignoreStartAndBreaks: !!settings.ignoreStartAndBreaks,
-        ignoreGuestDifficulties: !!settings.ignoreGuestDifficulties,
-        volume,
-        volumePercent: `${Math.round(volume * 100)}%`,
-        groupMapsBySong: !!settings.groupMapsBySong,
-        userId: settings.userId || '',
-        userIdLabel: settings.userId || 'Not generated',
-        embedApiKey: settings.embedApiKey || '',
-        apiKeyLabel: settings.embedApiKey || 'Not generated',
-        embedUrlLabel: settings.userId
-            ? `${settings.embedSyncUrl}/embed/${settings.userId}`
-            : 'Generate user ID first',
-        embedLastSyncedLabel: settings.embedLastSynced
-            ? `Last synced: ${new Date(settings.embedLastSynced).toLocaleString()}`
-            : 'Not synced yet',
-        embedSyncStatus: embedSyncUiState.status,
-        embedSyncButtonLabel: embedSyncUiState.buttonLabel,
-        embedSyncButtonTooltip: embedSyncUiState.buttonTooltip,
-        embedSyncButtonDisabled: !!embedSyncUiState.buttonDisabled,
-        embedShowTodoList: !!settings.embedShowTodoList,
-        embedShowCompletedList: !!settings.embedShowCompletedList,
-        embedShowProgressStats: !!settings.embedShowProgressStats,
-        linkedAliases,
-        hasLinkedAliases: linkedAliases.length > 0
-    };
 };
 
 const processMapperInput = async (value) => {
@@ -1853,7 +1764,24 @@ const buildListItem = (metadata, index) => {
         };
 
         const deadlinePicker = createCustomDatePicker(normalized.deadline, (newDeadline) => {
-            setItemDeadline(normalized.id, newDeadline);
+            // Update local data
+            const itemIndex = beatmapItems.findIndex(i => i.id === normalized.id);
+            if (itemIndex !== -1) {
+                beatmapItems[itemIndex].deadline = newDeadline;
+                scheduleSave();
+
+                // Update status class without re-rendering everything
+                listBox.classList.remove('list-box--overdue', 'list-box--due-soon');
+                if (newDeadline && !isDone) {
+                    const now = Date.now();
+                    const diffDays = (newDeadline - now) / (1000 * 60 * 60 * 24);
+                    if (diffDays < 0) {
+                        listBox.classList.add('list-box--overdue');
+                    } else if (diffDays <= 3) {
+                        listBox.classList.add('list-box--due-soon');
+                    }
+                }
+            }
         });
 
         const expansionContent = document.createElement('div');
@@ -1867,7 +1795,11 @@ const buildListItem = (metadata, index) => {
         notesTextarea.value = normalized.notes || '';
         notesTextarea.onclick = (e) => e.stopPropagation();
         notesTextarea.oninput = (e) => {
-            setItemNotes(normalized.id, e.target.value);
+            const itemIndex = beatmapItems.findIndex(i => i.id === normalized.id);
+            if (itemIndex !== -1) {
+                beatmapItems[itemIndex].notes = e.target.value;
+                scheduleSave();
+            }
         };
         notesContainer.appendChild(notesTextarea);
         expansionContent.appendChild(notesContainer);
@@ -1897,9 +1829,17 @@ const buildListItem = (metadata, index) => {
 
         targetStarInput.onclick = (e) => e.stopPropagation();
         targetStarInput.oninput = (e) => {
-            const val = e.target.value;
-            const rating = val === '' ? null : parseFloat(val);
-            setItemTargetStarRating(normalized.id, rating);
+            const itemIndex = beatmapItems.findIndex(i => i.id === normalized.id);
+            if (itemIndex !== -1) {
+                const val = e.target.value;
+                const rating = val === '' ? null : parseFloat(val);
+                beatmapItems[itemIndex].targetStarRating = rating;
+                scheduleSave();
+                // Update the star tag dynamically
+                if (listBox._updateStarTag) {
+                    listBox._updateStarTag(rating);
+                }
+            }
         };
 
         targetStarContainer.appendChild(targetStarLabel);
@@ -1998,9 +1938,6 @@ const syncVirtualList = () => {
 
     // Don't run the virtual list logic in grouped mode — groups use flow layout
     if (container.classList.contains('view-grouped')) return;
-    if (viewMode === 'all' && shouldUseSvelteAllView()) return;
-    if (viewMode === 'todo' && shouldUseSvelteTodoView()) return;
-    if (viewMode === 'completed' && shouldUseSvelteCompletedView()) return;
     const scrollTop = window.scrollY;
     const windowHeight = window.innerHeight;
     // Use cached containerTop — recomputed only on full re-renders (renderBeatmapList).
@@ -2063,21 +2000,14 @@ const renderBeatmapList = (listContainer, items) => {
 };
 
 const rerenderVisibleTimelines = () => {
-    const containers = [
-        document.querySelector('#listContainer'),
-        document.querySelector('#svelteAllListContainer'),
-        document.querySelector('#svelteTodoListContainer'),
-        document.querySelector('#svelteCompletedListContainer'),
-        document.querySelector('#svelteGroupedListContainer')
-    ].filter(Boolean);
-    if (!containers.length) return;
+    const container = document.querySelector('#listContainer');
+    if (!container) return;
 
+    // Repaint only rows around the viewport and split work across frames
+    // to avoid tab-switch hitches on large/grouped lists.
     const viewportTop = -120;
     const viewportBottom = window.innerHeight + 120;
-    const visibleBoxes = containers.flatMap((container) => Array.from(container.querySelectorAll('.list-box'))).filter((box) => {
-        if (isInHiddenTree(box) || box.getClientRects().length === 0) {
-            return false;
-        }
+    const visibleBoxes = Array.from(container.querySelectorAll('.list-box')).filter((box) => {
         const rect = box.getBoundingClientRect();
         return rect.bottom >= viewportTop && rect.top <= viewportBottom;
     });
@@ -2135,41 +2065,6 @@ const groupItemsBySong = (items) => {
     return order.map(key => ({ key, items: map.get(key) }));
 };
 
-const setGroupExpanded = (key, expanded) => {
-    if (!key) return false;
-
-    const isExpanded = groupedExpandedKeys.has(key);
-    if (expanded) {
-        if (isExpanded) return false;
-        groupedExpandedKeys.add(key);
-    } else {
-        if (!isExpanded) return false;
-        groupedExpandedKeys.delete(key);
-    }
-
-    emitGroupViewStateToUI(getGroupViewSnapshot());
-    emitViewModelStateToUI(getViewModelSnapshot());
-    return true;
-};
-
-const toggleGroupExpanded = (key) => {
-    if (!key) return false;
-    return setGroupExpanded(key, !groupedExpandedKeys.has(key));
-};
-
-const replaceExpandedGroups = (keys) => {
-    groupedExpandedKeys.clear();
-    if (Array.isArray(keys)) {
-        for (const key of keys) {
-            if (!key) continue;
-            groupedExpandedKeys.add(String(key));
-        }
-    }
-    emitGroupViewStateToUI(getGroupViewSnapshot());
-    emitViewModelStateToUI(getViewModelSnapshot());
-    return getGroupViewSnapshot();
-};
-
 /**
  * Builds an individual "child" row for an expanded group.
  * It reuses buildListItem but wraps it with a hierarchy indicator.
@@ -2188,34 +2083,6 @@ const buildGroupChildRow = (item, index) => {
     wrapper.appendChild(inner);
 
     return wrapper;
-};
-
-const mountLegacyListBox = (container, itemId, index = 0, options = {}) => {
-    if (!(container instanceof Element)) return false;
-    if (!itemId) return false;
-
-    const item = beatmapItems.find((entry) => entry.id === itemId);
-    if (!item) return false;
-
-    const box = buildListItem(item, index);
-    box.dataset.renderIndex = String(index);
-    if (options?.groupChild) {
-        box.classList.add('list-box--group-child');
-    }
-    if (options?.flow) {
-        box.classList.add('list-box--flow');
-    }
-
-    container.replaceChildren(box);
-    batchRenderTimelines.push({ el: box, index: item });
-    scheduleTimelineBatchRender();
-    return true;
-};
-
-const clearLegacyListBox = (container) => {
-    if (!(container instanceof Element)) return false;
-    container.replaceChildren();
-    return true;
 };
 
 /**
@@ -2358,12 +2225,12 @@ const buildGroupHeaderRow = (group, groupIndex) => {
         animSafetyTimer = setTimeout(release, 600); // fallback if transitionend doesn't fire
 
         if (wasExpanded) {
-            setGroupExpanded(key, false);
+            groupedExpandedKeys.delete(key);
             groupEl.classList.remove('is-expanded');
             childrenContainer.classList.remove('is-open');
             // Children stay in DOM (hidden by 0fr grid row) — re-opening is instant
         } else {
-            setGroupExpanded(key, true);
+            groupedExpandedKeys.add(key);
             groupEl.classList.add('is-expanded');
             ensureChildrenBuilt(); // lazy build on first expand
 
@@ -2469,37 +2336,48 @@ const renderGroupedView = (listContainer, groups) => {
 };
 
 const setLoading = (isLoading) => {
-    const loading = !!isLoading;
-    listUiState = {
-        ...listUiState,
-        isLoading: loading,
-        progressVisible: loading ? listUiState.progressVisible : false
-    };
-    notifyListUiToUI(getListUiSnapshot());
+    const spinner = document.querySelector('#loadingSpinner');
+    if (!spinner) {
+        return;
+    }
+    spinner.classList.toggle('is-hidden', !isLoading);
+
+    const progressSection = document.querySelector('#loadingProgress');
+    if (!isLoading && progressSection) {
+        progressSection.classList.add('is-hidden');
+    }
 };
 
 const updateProgress = (current, total) => {
+    const progressSection = document.querySelector('#loadingProgress');
+    const fill = document.querySelector('#progressBarFill');
+    const label = document.querySelector('#progressLabel');
+    if (!progressSection || !fill || !label) {
+        return;
+    }
+    progressSection.classList.remove('is-hidden');
     const pct = total > 0 ? (current / total) * 100 : 0;
-    listUiState = {
-        ...listUiState,
-        progressVisible: true,
-        progressPct: pct,
-        progressLabel: `Processing ${current} / ${total} files...`
-    };
-    notifyListUiToUI(getListUiSnapshot());
+    fill.style.width = `${pct}%`;
+    label.textContent = `Processing ${current} / ${total} files...`;
 };
 
 const updateEmptyState = (listContainer) => {
-    if (!listContainer) {
+    const emptyState = document.querySelector('#emptyState');
+    const clearAllButton = document.querySelector('#clearAllBtn');
+    if (!emptyState || !listContainer) {
         return;
     }
+
+    // Use current itemsToRender for accurate empty state per tab
     const hasItems = itemsToRender.length > 0;
-    listUiState = {
-        ...listUiState,
-        isEmpty: !hasItems,
-        showClearAll: hasItems
-    };
-    notifyListUiToUI(getListUiSnapshot());
+
+    // Toggle is-active for transition, but avoid display: none so transitions work
+    emptyState.classList.toggle('is-active', !hasItems);
+
+    if (clearAllButton) {
+        // Show clear button if there are any items in the current view
+        clearAllButton.classList.toggle('is-hidden', !hasItems);
+    }
 };
 
 const getDirectoryPath = (filePath) => {
@@ -2546,108 +2424,90 @@ const createItemId = (seed) => {
 };
 
 const updateTabCounts = () => {
-    emitCoreStateToUI(getCoreStateSnapshot());
-};
+    const allCountEl = document.querySelector('#allCount');
+    const todoCountEl = document.querySelector('#todoCount');
+    const completedCountEl = document.querySelector('#completedCount');
 
-const isInHiddenTree = (element) => {
-    let node = element;
-    while (node) {
-        if (node instanceof HTMLElement && node.hidden) {
-            return true;
-        }
-        node = node.parentElement;
-    }
-    return false;
-};
+    const visibleItems = beatmapItems.filter(item => !isGuestDifficultyItem(item));
+    const visibleAllCount = visibleItems.length;
+    const visibleTodoCount = todoIds.reduce((count, id) => {
+        const item = beatmapItems.find(i => i.id === id);
+        if (!item) return count;
+        if (isGuestDifficultyItem(item)) return count;
+        return count + 1;
+    }, 0);
+    const visibleDoneCount = doneIds.reduce((count, id) => {
+        const item = beatmapItems.find(i => i.id === id);
+        if (!item) return count;
+        if (isGuestDifficultyItem(item)) return count;
+        return count + 1;
+    }, 0);
 
-const getVisibleListBoxByItemId = (itemId) => {
-    if (!itemId) return null;
-    const matches = Array.from(document.querySelectorAll(`[data-item-id="${itemId}"].list-box`));
-    if (!matches.length) return null;
-
-    const visible = matches.find((el) => !isInHiddenTree(el) && el.getClientRects().length > 0);
-    if (visible) return visible;
-
-    const notHidden = matches.find((el) => !isInHiddenTree(el));
-    return notHidden || matches[0] || null;
+    if (allCountEl) allCountEl.textContent = visibleAllCount;
+    if (todoCountEl) todoCountEl.textContent = visibleTodoCount;
+    if (completedCountEl) completedCountEl.textContent = visibleDoneCount;
 };
 
 const updateListItemElement = (itemId) => {
-    const roots = [
-        document.querySelector('#listContainer'),
-        document.querySelector('#svelteAllListContainer'),
-        document.querySelector('#svelteTodoListContainer'),
-        document.querySelector('#svelteGroupedListContainer'),
-        document.querySelector('#svelteCompletedListContainer')
-    ].filter(Boolean);
-    if (!roots.length) return;
+    const listContainer = document.querySelector('#listContainer');
+    if (!listContainer) return;
 
-    const elements = [];
-    roots.forEach((root) => {
-        root.querySelectorAll(`[data-item-id="${itemId}"]`).forEach((candidate) => {
-            if (candidate.classList?.contains('list-box')) {
-                elements.push(candidate);
-            }
-        });
-    });
-    if (!elements.length) return;
+    const el = listContainer.querySelector(`[data-item-id="${itemId}"]`);
+    if (!el) return;
 
     const isPinned = todoIds.includes(itemId);
     const isDone = doneIds.includes(itemId);
 
+    // 1. Update list-box state classes
+    el.classList.toggle('is-pinned', isPinned && viewMode === 'all');
+    el.classList.toggle('is-done', isDone);
+
+    // 2. Update Pin Button state
+    const pinBtn = el.querySelector('.pin-btn');
+    if (pinBtn) {
+        pinBtn.classList.toggle('is-active', isPinned);
+        if (viewMode === 'todo') {
+            pinBtn.dataset.tooltip = 'Remove from Todo';
+        } else {
+            pinBtn.dataset.tooltip = isPinned ? 'Unpin from Todo' : 'Pin to Todo';
+        }
+    }
+
+    // 3. Update Done Button (if exists in this view)
+    const doneBtn = el.querySelector('.done-btn');
+    if (doneBtn) {
+        doneBtn.classList.toggle('is-active', isDone);
+        const label = doneBtn.querySelector('span');
+        if (label) {
+            label.textContent = isDone ? 'Mark as Not Done' : 'Mark as Done';
+        }
+    }
+
     // 4. Update Stats (look up latest state from model if possible)
     const item = beatmapItems.find(i => i.id === itemId);
+    if (item) {
+        el.dataset.progress = String(item.progress || 0);
+    }
 
-    elements.forEach((el) => {
-        // 1. Update list-box state classes
-        el.classList.toggle('is-pinned', isPinned && viewMode === 'all');
-        el.classList.toggle('is-done', isDone);
+    const durationStat = el.querySelector('.duration-stat');
+    if (durationStat && item) {
+        durationStat.innerHTML = `<strong>Duration:</strong> ${formatDuration(item.durationMs)}`;
+    }
 
-        // 2. Update Pin Button state
-        const pinBtn = el.querySelector('.pin-btn');
-        if (pinBtn) {
-            pinBtn.classList.toggle('is-active', isPinned);
-            if (viewMode === 'todo') {
-                pinBtn.dataset.tooltip = 'Remove from Todo';
-            } else {
-                pinBtn.dataset.tooltip = isPinned ? 'Unpin from Todo' : 'Pin to Todo';
-            }
-        }
+    const calculatedSrTag = el.querySelector('.meta-tag--calculated-sr');
+    if (calculatedSrTag) {
+        applyCalculatedStarTagState(calculatedSrTag, item?.starRating);
+    }
 
-        // 3. Update Done Button (if exists in this view)
-        const doneBtn = el.querySelector('.done-btn');
-        if (doneBtn) {
-            doneBtn.classList.toggle('is-active', isDone);
-            const label = doneBtn.querySelector('span');
-            if (label) {
-                label.textContent = isDone ? 'Mark as Not Done' : 'Mark as Done';
-            }
-        }
+    const progressStat = el.querySelector('.progress-stat') || el.querySelector('.stat-item');
+    if (progressStat) {
+        const baseProgress = item ? (item.progress || 0) : (Number(el.dataset.progress) || 0);
+        const displayProgress = isDone ? 1 : baseProgress;
+        progressStat.innerHTML = `<strong>Progress:</strong> ${Math.round(displayProgress * 100)}%`;
+    }
 
-        if (item) {
-            el.dataset.progress = String(item.progress || 0);
-        }
-
-        const durationStat = el.querySelector('.duration-stat');
-        if (durationStat && item) {
-            durationStat.innerHTML = `<strong>Duration:</strong> ${formatDuration(item.durationMs)}`;
-        }
-
-        const calculatedSrTag = el.querySelector('.meta-tag--calculated-sr');
-        if (calculatedSrTag) {
-            applyCalculatedStarTagState(calculatedSrTag, item?.starRating);
-        }
-
-        const progressStat = el.querySelector('.progress-stat') || el.querySelector('.stat-item');
-        if (progressStat) {
-            const baseProgress = item ? (item.progress || 0) : (Number(el.dataset.progress) || 0);
-            const displayProgress = isDone ? 1 : baseProgress;
-            progressStat.innerHTML = `<strong>Progress:</strong> ${Math.round(displayProgress * 100)}%`;
-        }
-
-        // 5. Update Timeline Canvas
-        applyTimelineToBox(el, item);
-    });
+    // 5. Update Timeline Canvas
+    applyTimelineToBox(el, item);
 };
 
 const insertItemIntoTodoView = (itemId) => {
@@ -2658,110 +2518,11 @@ const insertItemIntoCompletedView = (itemId) => {
     renderFromState();
 };
 
-const updateDeadlineStatusClass = (itemId) => {
-    if (!itemId) return;
-    const rows = Array.from(document.querySelectorAll(`[data-item-id="${itemId}"].list-box`));
-    if (!rows.length) return;
-
-    const item = beatmapItems.find((entry) => entry.id === itemId);
-    const isDone = doneIds.includes(itemId);
-    rows.forEach((el) => {
-        el.classList.remove('list-box--overdue', 'list-box--due-soon');
-
-        if (!item || !item.deadline || isDone) {
-            return;
-        }
-
-        const diffDays = (item.deadline - Date.now()) / (1000 * 60 * 60 * 24);
-        if (diffDays < 0) {
-            el.classList.add('list-box--overdue');
-        } else if (diffDays <= 3) {
-            el.classList.add('list-box--due-soon');
-        }
-    });
-};
-
-const setItemDeadline = (itemId, deadline) => {
-    if (!itemId) return false;
-    const item = beatmapItems.find((entry) => entry.id === itemId);
-    if (!item) return false;
-
-    const normalized = (typeof deadline === 'number' && Number.isFinite(deadline)) ? deadline : null;
-    if (item.deadline === normalized) {
-        return true;
-    }
-
-    item.deadline = normalized;
-    scheduleSave();
-    updateDeadlineStatusClass(itemId);
-    emitItemDetailsStateToUI(getItemDetailsByIdSnapshot(itemId));
-    return true;
-};
-
-const setItemTargetStarRating = (itemId, rating) => {
-    if (!itemId) return false;
-    const item = beatmapItems.find((entry) => entry.id === itemId);
-    if (!item) return false;
-
-    const parsed = (typeof rating === 'number' && Number.isFinite(rating)) ? Math.max(0, Math.min(15, rating)) : null;
-    if (item.targetStarRating === parsed) {
-        return true;
-    }
-
-    item.targetStarRating = parsed;
-    scheduleSave();
-
-    document.querySelectorAll(`[data-item-id="${itemId}"].list-box`).forEach((el) => {
-        if (typeof el._updateStarTag === 'function') {
-            el._updateStarTag(parsed);
-        }
-    });
-
-    emitItemDetailsStateToUI(getItemDetailsByIdSnapshot(itemId));
-    return true;
-};
-
-const setItemNotes = (itemId, notes) => {
-    if (!itemId) return false;
-    const item = beatmapItems.find((entry) => entry.id === itemId);
-    if (!item) return false;
-
-    const normalized = String(notes || '');
-    if (item.notes === normalized) {
-        return true;
-    }
-
-    item.notes = normalized;
-    scheduleSave();
-    emitItemDetailsStateToUI(getItemDetailsByIdSnapshot(itemId));
-    return true;
-};
-
-const reorderTodoIds = (draggedId, dropId) => {
-    if (!draggedId || !dropId || draggedId === dropId) {
-        return false;
-    }
-
-    const fromIndex = todoIds.indexOf(draggedId);
-    const toIndex = todoIds.indexOf(dropId);
-    if (fromIndex === -1 || toIndex === -1) {
-        return false;
-    }
-
-    const [movedItem] = todoIds.splice(fromIndex, 1);
-    todoIds.splice(toIndex, 0, movedItem);
-    emitTodoOrderStateToUI(getTodoOrderSnapshot());
-    scheduleSave();
-    renderFromState();
-    return true;
-};
-
 const toggleTodo = (itemId) => {
     const wasPinned = todoIds.includes(itemId);
     if (wasPinned) {
         // Remove from todo list
         todoIds = todoIds.filter(id => id !== itemId);
-        emitTodoOrderStateToUI(getTodoOrderSnapshot());
         updateTabCounts();
         scheduleSave();
 
@@ -2775,7 +2536,6 @@ const toggleTodo = (itemId) => {
     } else {
         // Add to todo list (at end)
         todoIds.push(itemId);
-        emitTodoOrderStateToUI(getTodoOrderSnapshot());
         updateTabCounts();
         scheduleSave();
 
@@ -2797,7 +2557,6 @@ const toggleDone = (itemId) => {
             todoIds.unshift(itemId);
         }
 
-        emitTodoOrderStateToUI(getTodoOrderSnapshot());
         updateTabCounts();
         scheduleSave();
 
@@ -2813,7 +2572,6 @@ const toggleDone = (itemId) => {
         doneIds.push(itemId);
         todoIds = todoIds.filter(id => id !== itemId);
 
-        emitTodoOrderStateToUI(getTodoOrderSnapshot());
         updateTabCounts();
         scheduleSave();
 
@@ -2827,8 +2585,40 @@ const toggleDone = (itemId) => {
     }
 };
 
+
+const closeDialogWithAnimation = (dialog) => {
+    return new Promise((resolve) => {
+        if (!dialog || !dialog.open) {
+            resolve();
+            return;
+        }
+
+        let resolved = false;
+        const doResolve = () => {
+            if (resolved) return;
+            resolved = true;
+            dialog.classList.remove('is-closing');
+            dialog.close();
+            dialog.removeEventListener('animationend', onAnimationEnd);
+            resolve();
+        };
+
+        const onAnimationEnd = (event) => {
+            if (event.target !== dialog) return;
+            doResolve();
+        };
+
+        dialog.classList.add('is-closing');
+        dialog.addEventListener('animationend', onAnimationEnd);
+
+        // Safety fallback: if animation fails to fire or takes too long, close anyway
+        setTimeout(doResolve, 500);
+    });
+};
+
 const removeItemFromView = (itemId) => {
-    const existingEl = getVisibleListBoxByItemId(itemId);
+    const listContainer = document.querySelector('#listContainer');
+    const existingEl = listContainer?.querySelector(`[data-item-id="${itemId}"]`);
 
     // If it's the last item, we want an immediate collapse of the container
     const isLastItem = itemsToRender.length <= 1;
@@ -2912,25 +2702,41 @@ const filterItems = (items, query) => {
 
 const renderFromState = () => {
     const listContainer = document.querySelector('#listContainer');
+    if (!listContainer) {
+        return;
+    }
 
-    // Always compute itemsToRender first — getViewModelSnapshot() depends on it for
-    // groups/itemIds, so it must be up-to-date even when Svelte is handling the view.
+    // Cache mapper names once per render pass for guest difficulty filtering
     _cachedMapperNeedles = (getEffectiveMapperName() || '').split(',').map(m => m.trim().toLowerCase()).filter(Boolean);
 
     itemsToRender = [];
     if (viewMode === 'todo') {
+        // Build a lookup map for O(1) access in todo/completed modes.
         const itemMap = new Map();
-        for (const item of beatmapItems) itemMap.set(item.id, item);
+        for (const item of beatmapItems) {
+            itemMap.set(item.id, item);
+        }
+
+        // In TODO mode, we only show items in todoIds (in that specific order) and exclude hidden guest difficulties
         for (const id of todoIds) {
             const item = itemMap.get(id);
-            if (item && !isGuestDifficultyItem(item)) itemsToRender.push(item);
+            if (item && !isGuestDifficultyItem(item)) {
+                itemsToRender.push(item);
+            }
         }
     } else if (viewMode === 'completed') {
+        // Build a lookup map for O(1) access in todo/completed modes.
         const itemMap = new Map();
-        for (const item of beatmapItems) itemMap.set(item.id, item);
+        for (const item of beatmapItems) {
+            itemMap.set(item.id, item);
+        }
+
+        // In Completed mode, show items that have been marked done in the order of doneIds, excluding hidden
         for (const id of doneIds) {
             const item = itemMap.get(id);
-            if (item && !isGuestDifficultyItem(item)) itemsToRender.push(item);
+            if (item && !isGuestDifficultyItem(item)) {
+                itemsToRender.push(item);
+            }
         }
     } else {
         const visibleItems = beatmapItems.filter(item => !isGuestDifficultyItem(item));
@@ -2938,67 +2744,17 @@ const renderFromState = () => {
         itemsToRender = sortItems(filtered, sortState.mode, sortState.direction);
     }
 
-    if (!listContainer) {
-        emitCoreStateToUI(getCoreStateSnapshot());
-        emitItemDetailsStateToUI(getItemDetailsSnapshot());
-        emitViewModelStateToUI(getViewModelSnapshot());
-        return;
-    }
-
-    // Check if Svelte is handling the current view - skip all DOM work if so
-    const isSvelteHandlingView =
-        (settings.groupMapsBySong && viewMode === 'all' && shouldUseSvelteGroupedView()) ||
-        (viewMode === 'all' && shouldUseSvelteAllView()) ||
-        (viewMode === 'todo' && shouldUseSvelteTodoView()) ||
-        (viewMode === 'completed' && shouldUseSvelteCompletedView());
-
-    if (isSvelteHandlingView) {
-        // Svelte is handling the view - emit state updates (itemsToRender already computed above)
-        emitCoreStateToUI(getCoreStateSnapshot());
-        emitItemDetailsStateToUI(getItemDetailsSnapshot());
-        emitViewModelStateToUI(getViewModelSnapshot());
-        return;
-    }
-
-
     listContainer.className = '';
     listContainer.classList.add(`view-${viewMode}`);
 
     // Use grouped view only on 'all' tab when the setting is enabled
     if (settings.groupMapsBySong && viewMode === 'all') {
         listContainer.classList.add('view-grouped');
-        if (shouldUseSvelteGroupedView()) {
-            // Svelte-owned grouped shell; legacy renderer still powers child rows via bridge methods.
-            groupedRenderPassToken += 1;
-            cancelTimelineBatchRender();
-            listContainer.style.height = '';
-            listContainer.innerHTML = '';
-        } else {
-            const groups = groupItemsBySong(itemsToRender);
-            renderGroupedView(listContainer, groups);
-        }
-    } else if (viewMode === 'all' && shouldUseSvelteAllView()) {
-        groupedRenderPassToken += 1;
-        cancelTimelineBatchRender();
-        listContainer.style.height = '';
-        listContainer.innerHTML = '';
-    } else if (viewMode === 'todo' && shouldUseSvelteTodoView()) {
-        groupedRenderPassToken += 1;
-        cancelTimelineBatchRender();
-        listContainer.style.height = '';
-        listContainer.innerHTML = '';
-    } else if (viewMode === 'completed' && shouldUseSvelteCompletedView()) {
-        groupedRenderPassToken += 1;
-        cancelTimelineBatchRender();
-        listContainer.style.height = '';
-        listContainer.innerHTML = '';
+        const groups = groupItemsBySong(itemsToRender);
+        renderGroupedView(listContainer, groups);
     } else {
         renderBeatmapList(listContainer, itemsToRender);
     }
-
-    emitCoreStateToUI(getCoreStateSnapshot());
-    emitItemDetailsStateToUI(getItemDetailsSnapshot());
-    emitViewModelStateToUI(getViewModelSnapshot());
 };
 
 const serializeHighlights = (ranges) => ranges.map((range) => ([
@@ -3073,19 +2829,9 @@ const scheduleSave = () => {
 // ============================================
 // Embed Sync Module
 // ============================================
-const EMBED_SYNC_RATE_LIMIT_MS = 5 * 60_000; // 5 minutes
-const EMBED_SYNC_RATE_LIMIT_ON_429_MS = 15 * 60_000; // 15 minutes backoff on rate limit
+const EMBED_SYNC_RATE_LIMIT_MS = 30_000; // 30 seconds
 let embedSyncTimer = null;
 let lastEmbedSyncTime = 0;
-let embedSyncBackoffUntil = 0;
-let embedSyncInFlight = false;
-let embedSyncResetTimer = null;
-let embedSyncUiState = {
-    status: 'idle',
-    buttonLabel: 'Sync Now',
-    buttonTooltip: 'Sync embed now',
-    buttonDisabled: false
-};
 
 // Generate API key for embed sync
 const generateApiKey = () => {
@@ -3156,20 +2902,20 @@ const persistSettings = () => {
 };
 
 // Perform the sync to the embed site
-const performEmbedSync = async ({ manual = false } = {}) => {
-    if (embedSyncInFlight) {
-        return false;
-    }
-
+const performEmbedSync = async () => {
     if (!settings.embedApiKey) {
         settings.embedApiKey = generateApiKey();
         persistSettings();
     }
 
-    embedSyncInFlight = true;
     const payload = buildEmbedPayload();
     const syncUrl = `${settings.embedSyncUrl}/api/sync`;
-    updateEmbedSyncStatus('syncing');
+    const syncBtn = document.querySelector('#embedSyncNowBtn');
+
+    if (syncBtn) {
+        syncBtn.disabled = true;
+        updateEmbedSyncStatus('syncing');
+    }
 
     console.log('Starting embed sync to:', syncUrl);
 
@@ -3180,21 +2926,15 @@ const performEmbedSync = async ({ manual = false } = {}) => {
 
         if (result.success && (result.data?.success || result.data === true)) {
             settings.embedLastSynced = Date.now();
-            lastEmbedSyncTime = settings.embedLastSynced;
-            embedSyncBackoffUntil = 0;
             persistSettings();
             updateEmbedSyncStatus('synced');
-            if (manual) {
-                showNotification('Sync Complete', 'Embed tracker has been updated.', 'success');
-            }
-            return true;
+            showNotification('Sync Complete', 'Embed tracker has been updated.', 'success');
         } else {
             let errorMsg = result.data?.error || result.error || 'Sync Failed';
 
             // Handle specific HTTP status codes
             if (result.status === 429) {
                 errorMsg = 'Rate Limited';
-                embedSyncBackoffUntil = Date.now() + EMBED_SYNC_RATE_LIMIT_ON_429_MS;
             } else if (result.status === 401 || result.status === 403) {
                 errorMsg = 'Invalid API Key';
             } else if (result.status === 404) {
@@ -3205,110 +2945,90 @@ const performEmbedSync = async ({ manual = false } = {}) => {
 
             console.error('Embed sync failed:', errorMsg, result);
             updateEmbedSyncStatus('error', errorMsg);
-            if (manual) {
-                showNotification('Sync Failed', errorMsg, 'error');
-            }
-            return false;
+            showNotification('Sync Failed', errorMsg, 'error');
         }
     } catch (err) {
         console.error('Embed sync error:', err);
-        if (!manual) {
-            embedSyncBackoffUntil = Math.max(embedSyncBackoffUntil, Date.now() + 120_000);
-        }
         updateEmbedSyncStatus('error', 'Network Error');
-        if (manual) {
-            showNotification('Sync Failed', 'Network error - check your connection.', 'error');
-        }
-        return false;
+        showNotification('Sync Failed', 'Network error - check your connection.', 'error');
     } finally {
-        embedSyncInFlight = false;
+        if (syncBtn) {
+            syncBtn.disabled = false;
+        }
     }
 };
 
 // Schedule embed sync with rate limiting
 const scheduleEmbedSync = () => {
-    if (!settings.embedApiKey) {
-        return;
-    }
-
     if (embedSyncTimer) {
         clearTimeout(embedSyncTimer);
-        embedSyncTimer = null;
     }
 
-    if (embedSyncInFlight) {
-        return;
-    }
-
-    const now = Date.now();
-    const timeSinceLastSync = now - lastEmbedSyncTime;
-    const rateLimitDelay = Math.max(0, EMBED_SYNC_RATE_LIMIT_MS - timeSinceLastSync);
-    const backoffDelay = Math.max(0, embedSyncBackoffUntil - now);
-    const debounceDelay = 10_000;
-    const delay = Math.max(debounceDelay, rateLimitDelay, backoffDelay);
+    const timeSinceLastSync = Date.now() - lastEmbedSyncTime;
+    const delay = Math.max(0, EMBED_SYNC_RATE_LIMIT_MS - timeSinceLastSync);
 
     embedSyncTimer = setTimeout(() => {
-        embedSyncTimer = null;
-        performEmbedSync({ manual: false });
+        lastEmbedSyncTime = Date.now();
+        performEmbedSync();
     }, delay);
 };
 
 // Update sync status UI
 const updateEmbedSyncStatus = (status, error = null) => {
-    if (embedSyncResetTimer) {
-        clearTimeout(embedSyncResetTimer);
-        embedSyncResetTimer = null;
+    const syncBtn = document.querySelector('#embedSyncNowBtn');
+    const lastSyncEl = document.querySelector('#embedLastSynced');
+
+    if (syncBtn) {
+        // Clear previous status classes
+        syncBtn.classList.remove('status-syncing', 'status-synced', 'status-error');
+
+        if (status === 'syncing') {
+            syncBtn.classList.add('status-syncing');
+            syncBtn.textContent = 'Syncing...';
+            syncBtn.dataset.tooltip = 'Syncing with embed tracker...';
+        } else if (status === 'synced') {
+            syncBtn.classList.add('status-synced');
+            syncBtn.textContent = 'Synced';
+            syncBtn.dataset.tooltip = 'Successfully synced!';
+
+            // Reset to default state after 5 seconds
+            setTimeout(() => {
+                if (syncBtn.classList.contains('status-synced') && !syncBtn.disabled) {
+                    syncBtn.classList.remove('status-synced');
+                    syncBtn.textContent = 'Sync Now';
+                    syncBtn.dataset.tooltip = 'Sync embed now';
+                }
+            }, 5000);
+        } else if (status === 'error') {
+            syncBtn.classList.add('status-error');
+            syncBtn.textContent = `Error: ${error}`; // Prepend "Error: " to the reason
+            syncBtn.dataset.tooltip = `Error: ${error}. Click to try again.`;
+
+            // Reset to default state after 5 seconds
+            setTimeout(() => {
+                if (syncBtn.classList.contains('status-error') && !syncBtn.disabled) {
+                    syncBtn.classList.remove('status-error');
+                    syncBtn.textContent = 'Sync Now';
+                    syncBtn.dataset.tooltip = 'Sync embed now';
+                }
+            }, 5000);
+        } else {
+            syncBtn.textContent = 'Sync Now';
+            syncBtn.dataset.tooltip = 'Sync embed now';
+        }
     }
 
-    if (status === 'syncing') {
-        embedSyncUiState = {
-            status: 'syncing',
-            buttonLabel: 'Syncing...',
-            buttonTooltip: 'Syncing with embed tracker...',
-            buttonDisabled: true
-        };
-    } else if (status === 'synced') {
-        embedSyncUiState = {
-            status: 'synced',
-            buttonLabel: 'Synced',
-            buttonTooltip: 'Successfully synced!',
-            buttonDisabled: false
-        };
-    } else if (status === 'error') {
-        const reason = error || 'Sync Failed';
-        embedSyncUiState = {
-            status: 'error',
-            buttonLabel: `Error: ${reason}`,
-            buttonTooltip: `Error: ${reason}. Click to try again.`,
-            buttonDisabled: false
-        };
-    } else {
-        embedSyncUiState = {
-            status: 'idle',
-            buttonLabel: 'Sync Now',
-            buttonTooltip: 'Sync embed now',
-            buttonDisabled: false
-        };
-    }
-
-    emitSettingsControlsState();
-
-    if (status === 'synced' || status === 'error') {
-        embedSyncResetTimer = setTimeout(() => {
-            updateEmbedSyncStatus('idle');
-        }, 5000);
+    if (lastSyncEl && settings.embedLastSynced) {
+        const date = new Date(settings.embedLastSynced);
+        lastSyncEl.textContent = `Last synced: ${date.toLocaleString()}`;
     }
 };
 
 // Manual sync trigger
 const triggerManualSync = async () => {
-    lastEmbedSyncTime = 0;
-    embedSyncBackoffUntil = 0;
-    if (embedSyncTimer) {
-        clearTimeout(embedSyncTimer);
-        embedSyncTimer = null;
-    }
-    await performEmbedSync({ manual: true });
+    updateEmbedSyncStatus('syncing');
+    lastEmbedSyncTime = 0; // Reset rate limit for manual sync
+    await performEmbedSync();
 };
 
 const buildItemFromContent = async (filePath, content, stat, existing) => {
@@ -3457,6 +3177,9 @@ const queueMissingStarRatingFromItems = (items) => {
 let _lastTooltipUpdate = 0;
 
 const updateRefreshProgress = () => {
+    const refreshBtn = document.querySelector('#refreshBtn');
+    if (!refreshBtn) return;
+
     const audioTotal = Math.max(0, audioAnalysisTotal);
     const starTotal = Math.max(0, starRatingTotal);
     const total = audioTotal + starTotal;
@@ -3466,19 +3189,17 @@ const updateRefreshProgress = () => {
     const completed = audioCompleted + starCompleted;
 
     if (total <= 0) {
-        refreshUiState = {
-            ...refreshUiState,
-            isAnalyzing: false,
-            progressPct: 0,
-            tooltip: 'Refresh last directory'
-        };
-        notifyRefreshUiToUI(getRefreshUiSnapshot());
+        refreshBtn.style.setProperty('--refresh-progress', '0%');
+        refreshBtn.dataset.tooltip = 'Refresh last directory';
+        refreshBtn.classList.remove('is-analyzing');
         _lastTooltipUpdate = 0;
         return;
     }
 
+    refreshBtn.classList.add('is-analyzing');
+
     const progress = Math.min(100, Math.max(0, (completed / total) * 100));
-    let tooltip = refreshUiState.tooltip || 'Refresh last directory';
+    refreshBtn.style.setProperty('--refresh-progress', `${progress}%`);
 
     // Throttle tooltip text updates to every 2s — native tooltips flash when title changes
     const now = Date.now();
@@ -3487,21 +3208,13 @@ const updateRefreshProgress = () => {
         const hasAudio = audioTotal > 0;
         const hasStar = starTotal > 0;
         if (hasAudio && hasStar) {
-            tooltip = `Background analysis... ${Math.round(progress)}% (Audio ${audioCompleted}/${audioTotal}, SR ${starCompleted}/${starTotal})`;
+            refreshBtn.dataset.tooltip = `Background analysis... ${Math.round(progress)}% (Audio ${audioCompleted}/${audioTotal}, SR ${starCompleted}/${starTotal})`;
         } else if (hasStar) {
-            tooltip = `Calculating star ratings... ${Math.round(progress)}% (${completed}/${total})`;
+            refreshBtn.dataset.tooltip = `Calculating star ratings... ${Math.round(progress)}% (${completed}/${total})`;
         } else {
-            tooltip = `Analyzing audio durations... ${Math.round(progress)}% (${completed}/${total})`;
+            refreshBtn.dataset.tooltip = `Analyzing audio durations... ${Math.round(progress)}% (${completed}/${total})`;
         }
     }
-
-    refreshUiState = {
-        ...refreshUiState,
-        isAnalyzing: true,
-        progressPct: progress,
-        tooltip
-    };
-    notifyRefreshUiToUI(getRefreshUiSnapshot());
 };
 
 const scheduleAudioAnalysis = (itemId) => {
@@ -3909,7 +3622,6 @@ const loadFromStorage = async () => {
     }
     todoIds = stored.todoIds || [];
     doneIds = stored.doneIds || [];
-    emitTodoOrderStateToUI(getTodoOrderSnapshot());
     if (stored.sortState && typeof stored.sortState === 'object') {
         sortState.mode = stored.sortState.mode || 'dateAdded';
         sortState.direction = stored.sortState.direction || 'desc';
@@ -3940,10 +3652,27 @@ const loadFromStorage = async () => {
 };
 
 const updateSortUI = () => {
-    emitFilterStateToUI(getFilterStateSnapshot());
+    const dropdown = document.querySelector('#sortDropdown');
+    const label = document.querySelector('#sortLabel');
+    const direction = document.querySelector('#sortDirection');
+    const options = document.querySelectorAll('.sort-option');
+    const activeOption = Array.from(options).find((option) => option.dataset.sort === sortState.mode);
+
+    if (label && activeOption) {
+        label.textContent = activeOption.dataset.label || activeOption.textContent;
+    }
+    if (direction) {
+        direction.dataset.direction = sortState.direction;
+    }
+    if (dropdown) {
+        dropdown.classList.toggle('is-open', false);
+    }
+    options.forEach((option) => {
+        option.classList.toggle('is-active', option.dataset.sort === sortState.mode);
+    });
 };
 
-const updateSRRangeUI = (event, { rerenderList = true, fromState = false } = {}) => {
+const updateSRRangeUI = (event, { rerenderList = true } = {}) => {
     const minInput = document.getElementById('srMin');
     const maxInput = document.getElementById('srMax');
     const minHandle = document.getElementById('srMinHandle');
@@ -3952,23 +3681,16 @@ const updateSRRangeUI = (event, { rerenderList = true, fromState = false } = {})
 
     if (!minInput || !maxInput || !minHandle || !maxHandle || !track) return;
 
-    // When fromState is true, read from srFilter (set by Svelte) instead of input values
-    let min, max;
-    if (fromState) {
-        min = srFilter?.min ?? 0;
-        max = srFilter?.max ?? 10;
-    } else {
-        min = parseFloat(minInput.value);
-        max = parseFloat(maxInput.value);
-    }
+    let min = parseFloat(minInput.value);
+    let max = parseFloat(maxInput.value);
 
     if (min > max) {
         if (event?.target === minInput) {
             max = min;
-            // Don't set input value - Svelte controls it
+            maxInput.value = max;
         } else {
             min = max;
-            // Don't set input value - Svelte controls it
+            minInput.value = min;
         }
     }
 
@@ -3990,10 +3712,10 @@ const updateSRRangeUI = (event, { rerenderList = true, fromState = false } = {})
     if (max - min < minSRGap) {
         if (event?.target === minInput) {
             min = Math.max(0, max - minSRGap);
-            // Don't set input value - Svelte controls it
+            minInput.value = min.toFixed(1);
         } else if (event?.target === maxInput) {
             max = Math.min(10, min + minSRGap);
-            // Don't set input value - Svelte controls it
+            maxInput.value = max.toFixed(1);
         }
     }
 
@@ -4037,23 +3759,32 @@ const updateSRRangeUI = (event, { rerenderList = true, fromState = false } = {})
         track.style.display = 'none';
     }
 
-    // Keep the currently interacted slider on top to avoid "stuck" handle interactions.
-    if (event?.target === minInput) {
-        minInput.style.zIndex = '30';
-        maxInput.style.zIndex = '20';
-    } else if (event?.target === maxInput) {
-        maxInput.style.zIndex = '30';
-        minInput.style.zIndex = '20';
-    } else {
-        minInput.style.zIndex = '21';
-        maxInput.style.zIndex = '22';
+    // Proximity switching
+    if (document.activeElement !== minInput && document.activeElement !== maxInput) {
+        if (container && !container._srZIndexInit) {
+            container._srZIndexInit = true;
+            container.onmousemove = (e) => {
+                const rect = container.getBoundingClientRect();
+                const x = e.clientX - rect.left;
+                const pct = (x / rect.width) * 10;
+                if (Math.abs(pct - min) < Math.abs(pct - max)) {
+                    minInput.style.zIndex = '25';
+                    maxInput.style.zIndex = '20';
+                } else {
+                    maxInput.style.zIndex = '25';
+                    minInput.style.zIndex = '20';
+                }
+            };
+        }
     }
+
+    // Always ensure the active handle stays on top during dragging
+    if (document.activeElement === minInput) minInput.style.zIndex = '30';
+    if (document.activeElement === maxInput) maxInput.style.zIndex = '30';
 
     if (rerenderList && typeof renderFromState === 'function') {
         renderFromState();
     }
-
-    emitFilterStateToUI(getFilterStateSnapshot());
 };
 
 // Re-run UI update whenever the slider container changes width (e.g. window resize)
@@ -4066,8 +3797,6 @@ if (typeof ResizeObserver !== 'undefined') {
         const container = document.querySelector('.range-slider-container');
         if (container) {
             srResizeObserver.observe(container);
-            // Svelte mounts after renderer bootstrap; initialize slider UI once it exists.
-            updateSRRangeUI(null, { rerenderList: false });
         } else {
             // Container not in DOM yet — wait for it
             requestAnimationFrame(observeSRContainer);
@@ -4143,7 +3872,7 @@ const AudioController = {
         if (this.currentId !== itemId) {
             // Clear playhead on the previous item's timeline
             if (this.currentId) {
-                const prevEl = getVisibleListBoxByItemId(this.currentId);
+                const prevEl = document.querySelector(`[data-item-id="${this.currentId}"]`);
                 if (prevEl) {
                     const prevIdx = Number(prevEl.dataset.renderIndex);
                     applyTimelineToBox(prevEl, prevIdx);
@@ -4210,7 +3939,7 @@ const AudioController = {
 
     stop() {
         if (this.currentId) {
-            const el = getVisibleListBoxByItemId(this.currentId);
+            const el = document.querySelector(`[data-item-id="${this.currentId}"]`);
             if (el) {
                 const renderIndex = Number(el.dataset.renderIndex);
                 applyTimelineToBox(el, renderIndex);
@@ -4234,7 +3963,7 @@ const AudioController = {
     drawPlayhead() {
         if (!this.currentId) return;
 
-        const el = getVisibleListBoxByItemId(this.currentId);
+        const el = document.querySelector(`[data-item-id="${this.currentId}"]`);
         if (!el) return;
 
         const canvas = el.querySelector('.list-timeline');
@@ -4508,11 +4237,8 @@ const refreshLastDirectory = async () => {
         return;
     }
 
-    refreshUiState = {
-        ...refreshUiState,
-        isRefreshing: true
-    };
-    notifyRefreshUiToUI(getRefreshUiSnapshot());
+    const refreshBtn = document.querySelector('#refreshBtn');
+    if (refreshBtn) refreshBtn.classList.add('is-refreshing');
 
     try {
         const mapperName = (getEffectiveMapperName() || '').trim() || null;
@@ -4529,18 +4255,10 @@ const refreshLastDirectory = async () => {
         await scanDone;
 
         // Success animation
-        refreshUiState = {
-            ...refreshUiState,
-            isPulsing: true
-        };
-        notifyRefreshUiToUI(getRefreshUiSnapshot());
-        setTimeout(() => {
-            refreshUiState = {
-                ...refreshUiState,
-                isPulsing: false
-            };
-            notifyRefreshUiToUI(getRefreshUiSnapshot());
-        }, 200);
+        if (refreshBtn) {
+            refreshBtn.style.transform = 'scale(1.2)';
+            setTimeout(() => refreshBtn.style.transform = '', 200);
+        }
 
         // Show completion notification
         const scannedCount = streamingScanState?.items?.length || 0;
@@ -4553,11 +4271,7 @@ const refreshLastDirectory = async () => {
         setLoading(false);
         showNotification('Scan Failed', error.message || 'Failed to scan directory.', 'error');
     } finally {
-        refreshUiState = {
-            ...refreshUiState,
-            isRefreshing: false
-        };
-        notifyRefreshUiToUI(getRefreshUiSnapshot());
+        if (refreshBtn) refreshBtn.classList.remove('is-refreshing');
     }
 };
 
@@ -4565,13 +4279,41 @@ const loadBeatmapsByMapper = async () => {
     if (!window.beatmapApi?.openMapperOsuFiles) {
         return;
     }
-    const mapperValue = await (window.mosuPrompts?.promptMapperName?.() || Promise.resolve(null));
-    if (!mapperValue) {
-        return;
-    }
-    setLoading(true);
-    const mapperName = await processMapperInput(mapperValue);
-    setLoading(false);
+
+    const mapperName = await new Promise((resolve) => {
+        const dialog = document.querySelector('#mapperPrompt');
+        const input = document.querySelector('#mapperNameInput');
+        const cancelBtn = document.querySelector('#mapperPromptCancel');
+        if (!dialog || !input) {
+            resolve(null);
+            return;
+        }
+
+        input.value = '';
+        dialog.showModal();
+        input.focus();
+
+        const cleanup = async () => {
+            await closeDialogWithAnimation(dialog);
+            cancelBtn?.removeEventListener('click', onCancel);
+            dialog.removeEventListener('submit', onSubmit);
+            dialog.removeEventListener('cancel', onCancel);
+        };
+        const onCancel = async () => { await cleanup(); resolve(null); };
+        const onSubmit = async (event) => {
+            event.preventDefault();
+            const value = input.value.trim();
+            setLoading(true);
+            const processed = await processMapperInput(value);
+            setLoading(false);
+            await cleanup();
+            resolve(processed || null);
+        };
+
+        cancelBtn?.addEventListener('click', onCancel, { once: true });
+        dialog.addEventListener('submit', onSubmit, { once: true });
+        dialog.addEventListener('cancel', onCancel, { once: true });
+    });
 
     if (!mapperName) {
         return;
@@ -4605,41 +4347,30 @@ const loadBeatmapsFromFolder = async () => {
 };
 
 const initEventDelegation = () => {
-    document.addEventListener('click', (e) => {
+    const listContainer = document.querySelector('#listContainer');
+    if (!listContainer) return;
+
+    listContainer.addEventListener('click', (e) => {
         const target = e.target.closest('[data-action]');
         if (!target) return;
-        if (!target.closest('.list-box')) return;
 
         const action = target.dataset.action;
         const itemId = target.dataset.itemId;
-        const itemActions = window.mosuItemActions || {};
 
         if (action === 'toggle-pin') {
-            if (typeof itemActions.toggleTodo === 'function') {
-                itemActions.toggleTodo(itemId);
-            } else {
-                toggleTodo(itemId);
-            }
+            toggleTodo(itemId);
         } else if (action === 'toggle-done') {
-            if (typeof itemActions.toggleDone === 'function') {
-                itemActions.toggleDone(itemId);
-            } else {
-                toggleDone(itemId);
-            }
+            toggleDone(itemId);
         } else if (action === 'open-web') {
             const url = target.dataset.url;
-            if (typeof itemActions.openWeb === 'function') {
-                itemActions.openWeb(url);
-            } else if (url && window.appInfo?.openExternalUrl) {
+            if (url && window.appInfo?.openExternalUrl) {
                 window.appInfo.openExternalUrl(url);
             } else if (url) {
                 window.open(url, '_blank');
             }
         } else if (action === 'show-folder') {
             const path = target.dataset.path;
-            if (typeof itemActions.showFolder === 'function') {
-                itemActions.showFolder(path);
-            } else if (path && window.beatmapApi?.showItemInFolder) {
+            if (path && window.beatmapApi?.showItemInFolder) {
                 window.beatmapApi.showItemInFolder(path);
             }
         }
@@ -4654,16 +4385,32 @@ const initEventDelegation = () => {
 };
 
 const init = async () => {
+    const uploadButton = document.querySelector('#osuUploadBtn');
     const listContainer = document.querySelector('#listContainer');
+    const clearAllButton = document.querySelector('#clearAllBtn');
+    const uploadDropdown = document.querySelector('#uploadDropdown');
+    const uploadMenuToggle = document.querySelector('#uploadMenuToggle');
+    const uploadOptions = document.querySelectorAll('.upload-option');
+    const sortDropdown = document.querySelector('#sortDropdown');
+    const sortTrigger = document.querySelector('#sortTrigger');
+    const sortOptions = document.querySelectorAll('.sort-option');
+    const searchInput = document.querySelector('#searchInput');
+    const menuToggle = document.querySelector('#menuToggle');
+    const headerMenu = document.querySelector('#headerMenu');
     const mapperPrompt = document.querySelector('#mapperPrompt');
     const songsDirPrompt = document.querySelector('#songsDirPrompt');
-    const welcomePrompt = document.querySelector('#welcomePrompt');
-    const firstRunPrompt = document.querySelector('#firstRunPrompt');
-    const clearAllPrompt = document.querySelector('#clearAllPrompt');
     const settingsDialog = document.querySelector('#settingsDialog');
     const settingsBtn = document.querySelector('#settingsBtn');
     const aboutDialog = document.querySelector('#aboutDialog');
+    const aboutBtn = document.querySelector('#aboutBtn');
+    const closeAboutBtn = document.querySelector('#closeAboutBtn');
+    const tabButtons = document.querySelectorAll('.tab-button');
+    const closeSettingsBtn = document.querySelector('#closeSettingsBtn');
     const changelogDialog = document.querySelector('#changelogDialog');
+    const closeChangelogBtn = document.querySelector('#closeChangelogBtn');
+    const versionIndicator = document.querySelector('#versionIndicator');
+    const selectSongsDirBtn = document.querySelector('#selectSongsDirBtn');
+    const rescanNameInput = document.getElementById('rescanMapperName');
 
     // UI State Loading
     const loadSettings = () => {
@@ -4701,512 +4448,618 @@ const init = async () => {
         localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(settings));
     };
 
-    const settingsSubscribers = new Set();
-    const emitSettingsState = () => {
-        const snapshot = getSettingsStateSnapshot();
-        emitSettingsStateToUI(snapshot);
-        settingsSubscribers.forEach((callback) => {
-            try {
-                callback(snapshot);
-            } catch (error) {
-                // Non-fatal subscriber error
+    const updateSettingsUI = () => {
+        const autoRescan = document.querySelector('#autoRescan');
+        const rescanModeMapper = document.querySelector('#rescanModeMapper');
+        const rescanModeAll = document.querySelector('#rescanModeAll');
+        const rescanName = document.querySelector('#rescanMapperName');
+        const dirLabel = document.querySelector('#songsDirLabel');
+        const autoRescanOptions = document.querySelector('#autoRescanOptions');
+        const mapperRescanConfig = document.querySelector('#mapperRescanConfig');
+        const linkedAliasesContainer = document.querySelector('#linkedAliasesContainer');
+        const linkedAliasesList = document.querySelector('#linkedAliasesList');
+
+        if (autoRescan) autoRescan.checked = !!settings.autoRescan;
+
+        if (autoRescanOptions) {
+            autoRescanOptions.style.display = settings.autoRescan ? 'block' : 'none';
+        }
+
+        if (rescanModeMapper && rescanModeAll) {
+            if (settings.rescanMode === 'mapper') rescanModeMapper.checked = true;
+            else rescanModeAll.checked = true;
+        }
+
+        if (mapperRescanConfig) {
+            mapperRescanConfig.style.display = (settings.autoRescan && settings.rescanMode === 'mapper') ? 'block' : 'none';
+        }
+
+        if (rescanName) {
+            rescanName.value = settings.rescanMapperName || '';
+        }
+
+        // Update aliase tags
+        if (linkedAliasesList && linkedAliasesContainer) {
+            if (settings.mapperAliases && settings.mapperAliases.length > 0) {
+                linkedAliasesContainer.style.display = 'block';
+                linkedAliasesList.innerHTML = settings.mapperAliases.map((name, i) => {
+                    const isIgnored = settings.ignoredAliases?.includes(name.toLowerCase());
+                    const icon = isIgnored
+                        ? '<svg viewBox="0 0 448 512"><path d="M256 80c0-8.8-7.2-16-16-16s-16 7.2-16 16V240H64c-8.8 0-16 7.2-16 16s7.2 16 16 16H224V432c0 8.8 7.2 16 16 16s16-7.2 16-16V272H400c8.8 0 16-7.2 16-16s-7.2-16-16-16H256V80z"/></svg>' // Plus
+                        : '<svg viewBox="0 0 448 512"><path d="M432 256c0 17.7-14.3 32-32 32L48 288c-17.7 0-32-14.3-32-32s14.3-32 32-32l352 0c17.7 0 32 14.3 32 32z"/></svg>'; // Minus
+                    return `
+                        <div class="alias-tag ${i === 0 ? 'is-primary' : ''} ${isIgnored ? 'is-ignored' : ''}" data-name="${name}">
+                            <span>${name}</span>
+                            <div class="alias-tag-icon">
+                                ${icon}
+                            </div>
+                        </div>
+                    `;
+                }).join('');
+            } else {
+                linkedAliasesContainer.style.display = 'none';
+            }
+        }
+
+        if (dirLabel) dirLabel.textContent = settings.songsDir || 'Not selected';
+
+        const ignoreStartAndBreaks = document.querySelector('#ignoreStartAndBreaks');
+        const ignoreGuests = document.querySelector('#ignoreGuestDifficulties');
+        if (ignoreStartAndBreaks) ignoreStartAndBreaks.checked = settings.ignoreStartAndBreaks;
+        if (ignoreGuests) ignoreGuests.checked = settings.ignoreGuestDifficulties;
+
+        const volumeSlider = document.querySelector('#previewVolume');
+        if (volumeSlider) volumeSlider.value = settings.volume ?? 0.5;
+        if (volumeValue) volumeValue.textContent = `${Math.round((settings.volume ?? 0.5) * 100)}%`;
+
+
+        // Update user ID display
+        const userIdValue = document.querySelector('#userIdValue');
+        if (userIdValue) userIdValue.textContent = settings.userId || 'Not generated';
+
+        // Update embed settings
+        const apiKeyValue = document.querySelector('#apiKeyValue');
+        if (apiKeyValue) apiKeyValue.textContent = settings.embedApiKey || 'Not generated';
+
+        const embedUrlValue = document.querySelector('#embedUrlValue');
+        if (embedUrlValue) {
+            embedUrlValue.textContent = settings.userId
+                ? `${settings.embedSyncUrl}/embed/${settings.userId}`
+                : 'Generate user ID first';
+        }
+
+        const embedLastSynced = document.querySelector('#embedLastSynced');
+        if (embedLastSynced) {
+            if (settings.embedLastSynced) {
+                const date = new Date(settings.embedLastSynced);
+                embedLastSynced.textContent = `Last synced: ${date.toLocaleString()}`;
+            } else {
+                embedLastSynced.textContent = 'Not synced yet';
+            }
+        }
+
+        // Embed toggles
+        const embedShowTodoList = document.querySelector('#embedShowTodoList');
+        const embedShowCompletedList = document.querySelector('#embedShowCompletedList');
+        const embedShowProgressStats = document.querySelector('#embedShowProgressStats');
+
+        if (embedShowTodoList) embedShowTodoList.checked = settings.embedShowTodoList;
+        if (embedShowCompletedList) embedShowCompletedList.checked = settings.embedShowCompletedList;
+        if (embedShowProgressStats) embedShowProgressStats.checked = settings.embedShowProgressStats;
+
+        const groupMapsBySongEl = document.querySelector('#groupMapsBySong');
+        if (groupMapsBySongEl) groupMapsBySongEl.checked = !!settings.groupMapsBySong;
+    };
+
+    // Tab Listeners
+    tabButtons.forEach(btn => {
+        btn.addEventListener('click', () => {
+            const tab = btn.dataset.tab;
+            if (tab === viewMode) return;
+            viewMode = tab;
+            tabButtons.forEach(b => b.classList.toggle('is-active', b.dataset.tab === viewMode));
+
+            // Yield one frame so the tab active state paints immediately,
+            // then run potentially heavy list rendering work.
+            if (pendingTabRenderRaf) {
+                cancelAnimationFrame(pendingTabRenderRaf);
+            }
+            pendingTabRenderRaf = requestAnimationFrame(() => {
+                pendingTabRenderRaf = 0;
+                if (viewMode !== tab) return;
+                renderFromState();
+            });
+        });
+    });
+
+    // Upload Listeners
+    if (uploadButton) uploadButton.addEventListener('click', loadBeatmapFromDialog);
+    if (uploadMenuToggle && uploadDropdown) {
+        uploadMenuToggle.addEventListener('click', () => {
+            const isOpen = uploadDropdown.classList.toggle('is-open');
+            uploadMenuToggle.setAttribute('aria-expanded', String(isOpen));
+        });
+    }
+    uploadOptions.forEach(option => {
+        option.addEventListener('click', () => {
+            if (uploadDropdown && uploadMenuToggle) {
+                uploadDropdown.classList.remove('is-open');
+                uploadMenuToggle.setAttribute('aria-expanded', 'false');
+            }
+            const type = option.dataset.upload;
+            if (type === 'mapper') loadBeatmapsByMapper();
+            else if (type === 'folder') loadBeatmapsFromFolder();
+        });
+    });
+
+    // Sort Listeners
+    if (sortTrigger && sortDropdown) {
+        sortTrigger.addEventListener('click', () => {
+            const isOpen = sortDropdown.classList.toggle('is-open');
+            sortTrigger.setAttribute('aria-expanded', String(isOpen));
+        });
+    }
+    sortOptions.forEach(option => {
+        option.addEventListener('click', () => {
+            const mode = option.dataset.sort;
+            if (sortState.mode === mode) {
+                sortState.direction = sortState.direction === 'asc' ? 'desc' : 'asc';
+            } else {
+                sortState.mode = mode;
+                sortState.direction = 'desc';
+            }
+            updateSortUI();
+            renderFromState();
+            scheduleSave();
+        });
+    });
+
+    const updateVersionLabels = async () => {
+        if (!window.appInfo?.getVersion) return null;
+        try {
+            const version = await window.appInfo.getVersion();
+            const aboutVersionEl = document.querySelector('#aboutVersion');
+            if (aboutVersionEl) aboutVersionEl.textContent = `v${version}`;
+            const changelogVersionEl = document.querySelector('#changelogVersionTag');
+            if (changelogVersionEl) changelogVersionEl.textContent = `v${version}`;
+            return version;
+        } catch (err) {
+            console.error('Failed to fetch app version:', err);
+            return null;
+        }
+    };
+
+    // About Listeners
+    if (aboutBtn && aboutDialog) {
+        aboutBtn.addEventListener('click', async () => {
+            await updateVersionLabels();
+            aboutDialog.showModal();
+        });
+    }
+    if (closeAboutBtn && aboutDialog) {
+        closeAboutBtn.addEventListener('click', () => closeDialogWithAnimation(aboutDialog));
+    }
+    if (aboutDialog) {
+        aboutDialog.addEventListener('click', (event) => {
+            if (event.target === aboutDialog) {
+                closeDialogWithAnimation(aboutDialog);
             }
         });
+    }
+
+    // Changelog Listeners
+    const showChangelog = async () => {
+        if (!changelogDialog) return;
+        await updateVersionLabels();
+        changelogDialog.showModal();
     };
 
-    const updateSettingsUI = () => {
-        emitSettingsState();
-    };
+    if (closeChangelogBtn && changelogDialog) {
+        closeChangelogBtn.addEventListener('click', () => closeDialogWithAnimation(changelogDialog));
+    }
+    if (changelogDialog) {
+        changelogDialog.addEventListener('click', (event) => {
+            if (event.target === changelogDialog) {
+                closeDialogWithAnimation(changelogDialog);
+            }
+        });
+    }
+    if (versionIndicator) {
+        versionIndicator.addEventListener('click', showChangelog);
+    }
 
-    let rescanMapperTimer = null;
-
-    const selectSongsDirFromUI = async () => {
-        if (!window.beatmapApi?.selectDirectory) return getSettingsStateSnapshot();
-        const dir = await window.beatmapApi.selectDirectory();
-        if (dir) {
-            settings.songsDir = dir;
-            saveSettings();
+    // Settings Listeners
+    if (settingsBtn && settingsDialog) {
+        settingsBtn.addEventListener('click', () => {
             updateSettingsUI();
-            showNotification('Directory Set', 'Songs folder has been updated.', 'success');
-        }
-        return getSettingsStateSnapshot();
-    };
-
-    const setEmbedToggleFromUI = (id, checked) => {
-        if (!['embedShowTodoList', 'embedShowCompletedList', 'embedShowProgressStats'].includes(id)) {
-            return getSettingsStateSnapshot();
-        }
-        settings[id] = !!checked;
-        saveSettings();
-        updateSettingsUI();
-        return getSettingsStateSnapshot();
-    };
-
-    const setSettingToggleFromUI = (id, checked) => {
-        if (!['autoRescan', 'ignoreStartAndBreaks', 'ignoreGuestDifficulties'].includes(id)) {
-            return getSettingsStateSnapshot();
-        }
-
-        settings[id] = !!checked;
-        persistSettings();
-        updateSettingsUI();
-
-        if (id === 'autoRescan' && checked) {
-            refreshLastDirectory();
-        } else if (id === 'ignoreStartAndBreaks') {
-            beatmapItems = beatmapItems.map(item => ({
-                ...item,
-                progress: computeProgress(item.highlights)
-            }));
-            renderFromState();
-        } else if (id === 'ignoreGuestDifficulties') {
-            updateTabCounts();
-            renderFromState();
-        }
-        return getSettingsStateSnapshot();
-    };
-
-    const setRescanModeFromUI = (mode) => {
-        if (!['mapper', 'all'].includes(mode)) {
-            return getSettingsStateSnapshot();
-        }
-
-        const prevMode = settings.rescanMode;
-        settings.rescanMode = mode;
-        persistSettings();
-        updateSettingsUI();
-
-        if (settings.autoRescan && prevMode !== mode) {
-            if (mode === 'mapper' && prevMode === 'all') {
-                beatmapItems = [];
-                updateTabCounts();
-                if (listContainer) listContainer.innerHTML = '';
-                updateEmptyState(listContainer);
-                saveToStorage();
+            settingsDialog.showModal();
+        });
+    }
+    if (closeSettingsBtn && settingsDialog) {
+        closeSettingsBtn.addEventListener('click', () => closeDialogWithAnimation(settingsDialog));
+    }
+    if (settingsDialog) {
+        settingsDialog.addEventListener('click', (event) => {
+            if (event.target === settingsDialog) {
+                closeDialogWithAnimation(settingsDialog);
             }
-            refreshLastDirectory();
-        }
+        });
+    }
 
-        return getSettingsStateSnapshot();
-    };
-
-    const setGroupMapsBySongFromUI = (checked) => {
-        settings.groupMapsBySong = !!checked;
-        saveSettings();
-        replaceExpandedGroups([]);
-        renderFromState();
-        updateSettingsUI();
-        return getSettingsStateSnapshot();
-    };
-
-    const setVolumeFromUI = (value) => {
-        const vol = Math.max(0, Math.min(1, Number(value) || 0));
-        settings.volume = vol;
-        AudioController.updateVolume();
-        saveSettings();
-        updateSettingsUI();
-        return getSettingsStateSnapshot();
-    };
-
-    const toggleLinkedAliasFromUI = (name) => {
-        if (!name) return getSettingsStateSnapshot();
-        if (!settings.ignoredAliases) settings.ignoredAliases = [];
-
-        const normalized = String(name).toLowerCase();
-        const index = settings.ignoredAliases.indexOf(normalized);
-        if (index > -1) settings.ignoredAliases.splice(index, 1);
-        else settings.ignoredAliases.push(normalized);
-
-        persistSettings();
-        updateSettingsUI();
-
-        if (settings.autoRescan && settings.rescanMode === 'mapper') {
-            refreshLastDirectory();
-        }
-        return getSettingsStateSnapshot();
-    };
-
-    const setRescanMapperNameFromUI = (rawValue) => {
-        const value = String(rawValue || '').trim();
-        const isUrl = value.includes('osu.ppy.sh/users/') || value.includes('osu.ppy.sh/u/');
-        const isId = /^\d+$/.test(value);
-
-        settings.rescanMapperName = value;
-        saveSettings();
-        updateSettingsUI();
-
-        if (rescanMapperTimer) clearTimeout(rescanMapperTimer);
-        rescanMapperTimer = setTimeout(async () => {
-            if (!value) {
-                settings.mapperAliases = [];
-                settings.ignoredAliases = [];
-                settings.userId = null;
-                settings.rescanMapperName = '';
-                settings.embedApiKey = null;
-                settings.embedLastSynced = null;
-                saveSettings();
-
-                beatmapItems = [];
-                updateTabCounts();
-                if (listContainer) listContainer.innerHTML = '';
-                updateEmptyState(listContainer);
-                saveToStorage();
-
-                updateSettingsUI();
-                return;
-            }
-
-            if (isUrl || (isId && value !== settings.userId?.toString())) {
-                const processed = await processMapperInput(value);
-                if (processed && processed !== value) {
-                    settings.rescanMapperName = processed;
-                    saveSettings();
-                    updateSettingsUI();
+    // User ID copy functionality
+    const userIdDisplay = document.querySelector('#userIdDisplay');
+    if (userIdDisplay) {
+        const copyUserId = async () => {
+            if (settings.userId) {
+                try {
+                    await navigator.clipboard.writeText(settings.userId);
+                    // Visual feedback
+                    userIdDisplay.classList.add('copied');
+                    setTimeout(() => userIdDisplay.classList.remove('copied'), 1500);
+                    showNotification('Copied', 'User ID copied to clipboard.', 'success');
+                } catch (e) {
+                    console.error('Failed to copy user ID:', e);
+                    showNotification('Copy Failed', 'Could not copy user ID.', 'error');
                 }
             }
-
-            const currentListContainer = document.querySelector('#listContainer');
-            if (currentListContainer) currentListContainer.innerHTML = '';
-
-            const targetDir = settings.songsDir || lastScannedDirectory;
-            if (!targetDir || !window.beatmapApi?.scanDirectoryOsuFiles) {
-                updateTabCounts();
-                renderFromState();
-                return;
-            }
-
-            try {
-                const knownFiles = {};
-                beatmapItems.forEach(item => {
-                    if (item.filePath) knownFiles[item.filePath] = item.dateModified;
-                });
-
-                const mapper = getEffectiveMapperName();
-                const scanDone = startStreamingScan();
-                await window.beatmapApi.scanDirectoryOsuFiles(targetDir, mapper || null, knownFiles);
-                await scanDone;
-            } catch (err) {
-                console.error('Mapper rescan failed:', err);
-                streamingScanState = null;
-                setLoading(false);
-                updateTabCounts();
-                renderFromState();
-                showNotification('Rescan Failed', err.message || 'Failed to rescan for maps.', 'error');
-            }
-        }, 800);
-
-        return getSettingsStateSnapshot();
-    };
-
-    const copyUserIdFromUI = async () => {
-        if (!settings.userId) return false;
-        try {
-            await navigator.clipboard.writeText(settings.userId);
-            showNotification('Copied', 'User ID copied to clipboard.', 'success');
-            return true;
-        } catch (e) {
-            console.error('Failed to copy user ID:', e);
-            showNotification('Copy Failed', 'Could not copy user ID.', 'error');
-            return false;
-        }
-    };
-
-    const copyApiKeyFromUI = async () => {
-        if (!settings.embedApiKey) return false;
-        try {
-            await navigator.clipboard.writeText(settings.embedApiKey);
-            showNotification('Copied', 'API key copied to clipboard.', 'success');
-            return true;
-        } catch (e) {
-            console.error('Failed to copy API key:', e);
-            showNotification('Copy Failed', 'Could not copy API key.', 'error');
-            return false;
-        }
-    };
-
-    const copyEmbedUrlFromUI = async () => {
-        if (!settings.userId) return false;
-        const url = `${settings.embedSyncUrl}/embed/${settings.userId}`;
-        try {
-            await navigator.clipboard.writeText(url);
-            showNotification('Copied', 'Embed URL copied to clipboard.', 'success');
-            return true;
-        } catch (e) {
-            console.error('Failed to copy embed URL:', e);
-            showNotification('Copy Failed', 'Could not copy embed URL.', 'error');
-            return false;
-        }
-    };
-
-    const regenerateApiKeyFromUI = () => {
-        settings.embedApiKey = generateApiKey();
-        settings.embedLastSynced = null;
-        persistSettings();
-        updateSettingsUI();
-        showNotification('API Key Reset', 'A new API key has been generated and ready for sync.', 'success');
-        return getSettingsStateSnapshot();
-    };
-
-    const triggerManualSyncFromUI = async () => {
-        await triggerManualSync();
-        updateSettingsUI();
-        return getSettingsStateSnapshot();
-    };
-
-    window.mosuSettings = {
-        ...(window.mosuSettings || {}),
-        updateUI: updateSettingsUI,
-        getState: () => getSettingsStateSnapshot(),
-        subscribe: (callback) => {
-            if (typeof callback !== 'function') return () => { };
-            settingsSubscribers.add(callback);
-            callback(getSettingsStateSnapshot());
-            return () => settingsSubscribers.delete(callback);
-        },
-        selectSongsDir: selectSongsDirFromUI,
-        setEmbedToggle: setEmbedToggleFromUI,
-        setSettingToggle: setSettingToggleFromUI,
-        setRescanMode: setRescanModeFromUI,
-        setGroupMapsBySong: setGroupMapsBySongFromUI,
-        setVolume: setVolumeFromUI,
-        toggleLinkedAlias: toggleLinkedAliasFromUI,
-        setRescanMapperName: setRescanMapperNameFromUI,
-        copyUserId: copyUserIdFromUI,
-        copyApiKey: copyApiKeyFromUI,
-        copyEmbedUrl: copyEmbedUrlFromUI,
-        regenerateApiKey: regenerateApiKeyFromUI,
-        triggerManualSync: triggerManualSyncFromUI
-    };
-    // Keep external UI emitter decoupled from state broadcaster to avoid recursion.
-
-    emitSettingsControlsState = emitSettingsState;
-
-    const listUiSubscribers = new Set();
-    notifyListUiToUI = (snapshot = getListUiSnapshot()) => {
-        listUiSubscribers.forEach((callback) => {
-            try {
-                callback(snapshot);
-            } catch (error) {
-                // Non-fatal subscriber error
-            }
-        });
-    };
-
-    window.mosuListUI = {
-        ...(window.mosuListUI || {}),
-        getState: () => getListUiSnapshot(),
-        subscribe: (callback) => {
-            if (typeof callback !== 'function') return () => { };
-            listUiSubscribers.add(callback);
-            callback(getListUiSnapshot());
-            return () => listUiSubscribers.delete(callback);
-        }
-    };
-
-    const coreStateSubscribers = new Set();
-    emitCoreStateToUI = (snapshot = getCoreStateSnapshot()) => {
-        coreStateSubscribers.forEach((callback) => {
-            try {
-                callback(snapshot);
-            } catch (error) {
-                // Non-fatal subscriber error
-            }
-        });
-    };
-
-    window.mosuCoreState = {
-        ...(window.mosuCoreState || {}),
-        getState: () => getCoreStateSnapshot(),
-        subscribe: (callback) => {
-            if (typeof callback !== 'function') return () => { };
-            coreStateSubscribers.add(callback);
-            callback(getCoreStateSnapshot());
-            return () => coreStateSubscribers.delete(callback);
-        }
-    };
-
-    const todoOrderSubscribers = new Set();
-    emitTodoOrderStateToUI = (snapshot = getTodoOrderSnapshot()) => {
-        todoOrderSubscribers.forEach((callback) => {
-            try {
-                callback(snapshot);
-            } catch (error) {
-                // Non-fatal subscriber error
-            }
-        });
-    };
-
-    window.mosuTodoOrder = {
-        ...(window.mosuTodoOrder || {}),
-        getState: () => getTodoOrderSnapshot(),
-        subscribe: (callback) => {
-            if (typeof callback !== 'function') return () => { };
-            todoOrderSubscribers.add(callback);
-            callback(getTodoOrderSnapshot());
-            return () => todoOrderSubscribers.delete(callback);
-        },
-        reorderTodo: (draggedId, dropId) => reorderTodoIds(draggedId, dropId)
-    };
-
-    const groupViewSubscribers = new Set();
-    emitGroupViewStateToUI = (snapshot = getGroupViewSnapshot()) => {
-        groupViewSubscribers.forEach((callback) => {
-            try {
-                callback(snapshot);
-            } catch (error) {
-                // Non-fatal subscriber error
-            }
-        });
-    };
-
-    window.mosuGroupView = {
-        ...(window.mosuGroupView || {}),
-        getState: () => getGroupViewSnapshot(),
-        subscribe: (callback) => {
-            if (typeof callback !== 'function') return () => { };
-            groupViewSubscribers.add(callback);
-            callback(getGroupViewSnapshot());
-            return () => groupViewSubscribers.delete(callback);
-        },
-        toggleExpanded: (key) => {
-            if (!key) return getGroupViewSnapshot();
-            toggleGroupExpanded(String(key));
-            return getGroupViewSnapshot();
-        },
-        setExpanded: (key, expanded) => {
-            if (!key) return getGroupViewSnapshot();
-            setGroupExpanded(String(key), !!expanded);
-            return getGroupViewSnapshot();
-        },
-        replaceExpanded: (keys) => replaceExpandedGroups(keys)
-    };
-
-    const refreshUiSubscribers = new Set();
-    notifyRefreshUiToUI = (snapshot = getRefreshUiSnapshot()) => {
-        refreshUiSubscribers.forEach((callback) => {
-            try {
-                callback(snapshot);
-            } catch (error) {
-                // Non-fatal subscriber error
-            }
-        });
-    };
-
-    window.mosuRefreshUI = {
-        ...(window.mosuRefreshUI || {}),
-        getState: () => getRefreshUiSnapshot(),
-        subscribe: (callback) => {
-            if (typeof callback !== 'function') return () => { };
-            refreshUiSubscribers.add(callback);
-            callback(getRefreshUiSnapshot());
-            return () => refreshUiSubscribers.delete(callback);
-        }
-    };
-
-    const filterSubscribers = new Set();
-    const emitFilterState = () => {
-        emitFilterStateToUI(getFilterStateSnapshot());
-        const snapshot = getFilterStateSnapshot();
-        filterSubscribers.forEach((callback) => {
-            try {
-                callback(snapshot);
-            } catch (error) {
-                // Non-fatal subscriber error
-            }
-        });
-    };
-
-    const setViewModeFromUI = (tab) => {
-        if (!tab || viewMode === tab) {
-            return getFilterStateSnapshot();
-        }
-
-        viewMode = tab;
-        emitFilterState();
-        if (pendingTabRenderRaf) {
-            cancelAnimationFrame(pendingTabRenderRaf);
-            pendingTabRenderRaf = 0;
-        }
-        renderFromState();
-        emitFilterState();
-
-        return getFilterStateSnapshot();
-    };
-
-    const setSortModeFromUI = (mode) => {
-        if (!mode) return getFilterStateSnapshot();
-
-        if (sortState.mode === mode) {
-            sortState.direction = sortState.direction === 'asc' ? 'desc' : 'asc';
-        } else {
-            sortState.mode = mode;
-            sortState.direction = 'desc';
-        }
-
-        updateSortUI();
-        renderFromState();
-        scheduleSave();
-        emitFilterState();
-        return getFilterStateSnapshot();
-    };
-
-    let _searchRenderTimer = null;
-    const setSearchQueryFromUI = (query) => {
-        searchQuery = String(query || '').trim();
-        // Update filter state immediately so UI reflects new query
-        emitFilterState();
-        // Debounce the expensive re-render to avoid per-keystroke lag
-        if (_searchRenderTimer) clearTimeout(_searchRenderTimer);
-        _searchRenderTimer = setTimeout(() => {
-            _searchRenderTimer = null;
-            renderFromState();
-        }, 80);
-        return getFilterStateSnapshot();
-    };
-
-    let _srRenderTimer = null;
-    const setStarRangeFromUI = (min, max, activeHandle = null) => {
-        // Update internal state - DO NOT set input values directly as Svelte controls them
-        srFilter = {
-            min: Math.max(0, Math.min(10, Number(min) || 0)),
-            max: Math.max(0, Math.min(10, Number(max) || 10))
         };
-
-        // Update visual handles only (Svelte owns the input values)
-        updateSRRangeUI(null, { rerenderList: false, fromState: true });
-
-        emitFilterState();
-
-        // Debounce the expensive list re-render — the filter result during a slider
-        // drag only matters once the user settles on a value.
-        if (_srRenderTimer) clearTimeout(_srRenderTimer);
-        _srRenderTimer = setTimeout(() => {
-            _srRenderTimer = null;
-            renderFromState();
-        }, 80);
-
-        return getFilterStateSnapshot();
-    };
-
-    window.mosuFilters = {
-        ...(window.mosuFilters || {}),
-        getState: () => getFilterStateSnapshot(),
-        setViewMode: setViewModeFromUI,
-        setSortMode: setSortModeFromUI,
-        setSearchQuery: setSearchQueryFromUI,
-        setStarRange: setStarRangeFromUI,
-        subscribe: (callback) => {
-            if (typeof callback !== 'function') {
-                return () => { };
+        userIdDisplay.addEventListener('click', copyUserId);
+        userIdDisplay.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                copyUserId();
             }
-            filterSubscribers.add(callback);
-            callback(getFilterStateSnapshot());
-            return () => filterSubscribers.delete(callback);
+        });
+    }
+
+    // API Key copy functionality
+    const apiKeyDisplay = document.querySelector('#apiKeyDisplay');
+    if (apiKeyDisplay) {
+        const copyApiKey = async () => {
+            if (settings.embedApiKey) {
+                try {
+                    await navigator.clipboard.writeText(settings.embedApiKey);
+                    apiKeyDisplay.classList.add('copied');
+                    setTimeout(() => apiKeyDisplay.classList.remove('copied'), 1500);
+                    showNotification('Copied', 'API key copied to clipboard.', 'success');
+                } catch (e) {
+                    console.error('Failed to copy API key:', e);
+                    showNotification('Copy Failed', 'Could not copy API key.', 'error');
+                }
+            }
+        };
+        apiKeyDisplay.addEventListener('click', copyApiKey);
+        apiKeyDisplay.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                copyApiKey();
+            }
+        });
+    }
+
+    // Embed URL copy functionality
+    const embedUrlDisplay = document.querySelector('#embedUrlDisplay');
+    if (embedUrlDisplay) {
+        const copyEmbedUrl = async () => {
+            if (settings.userId) {
+                const url = `${settings.embedSyncUrl}/embed/${settings.userId}`;
+                try {
+                    await navigator.clipboard.writeText(url);
+                    embedUrlDisplay.classList.add('copied');
+                    setTimeout(() => embedUrlDisplay.classList.remove('copied'), 1500);
+                    showNotification('Copied', 'Embed URL copied to clipboard.', 'success');
+                } catch (e) {
+                    console.error('Failed to copy embed URL:', e);
+                    showNotification('Copy Failed', 'Could not copy embed URL.', 'error');
+                }
+            }
+        };
+        embedUrlDisplay.addEventListener('click', copyEmbedUrl);
+        embedUrlDisplay.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                copyEmbedUrl();
+            }
+        });
+    }
+
+    // Embed sync now button
+    const embedSyncNowBtn = document.querySelector('#embedSyncNowBtn');
+    if (embedSyncNowBtn) {
+        embedSyncNowBtn.addEventListener('click', triggerManualSync);
+    }
+
+    // Regenerate API key button
+    const regenerateApiKeyBtn = document.querySelector('#regenerateApiKeyBtn');
+    if (regenerateApiKeyBtn) {
+        regenerateApiKeyBtn.addEventListener('click', () => {
+            settings.embedApiKey = generateApiKey();
+            settings.embedLastSynced = null;
+            persistSettings();
+            updateSettingsUI();
+            showNotification('API Key Reset', 'A new API key has been generated and ready for sync.', 'success');
+        });
+    }
+
+    // Embed settings toggles
+    ['embedShowTodoList', 'embedShowCompletedList', 'embedShowProgressStats'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) {
+            el.addEventListener('change', (e) => {
+                settings[id] = e.target.checked;
+                saveSettings();
+            });
+        }
+    });
+
+    if (selectSongsDirBtn) {
+        selectSongsDirBtn.addEventListener('click', async () => {
+            if (window.beatmapApi?.selectDirectory) {
+                const dir = await window.beatmapApi.selectDirectory();
+                if (dir) {
+                    settings.songsDir = dir;
+                    saveSettings();
+                    updateSettingsUI();
+                    showNotification('Directory Set', 'Songs folder has been updated.', 'success');
+                }
+            }
+        });
+    }
+
+    // Generic Setting Toggles
+    ['autoRescan', 'ignoreStartAndBreaks', 'ignoreGuestDifficulties'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) {
+            el.addEventListener('change', (e) => {
+                const checked = e.target.checked;
+                settings[id] = checked;
+
+                persistSettings();
+                try { updateSettingsUI(); } catch (e) { }
+
+                if (id === 'autoRescan' && checked) {
+                    refreshLastDirectory();
+                } else if (id === 'ignoreStartAndBreaks') {
+                    beatmapItems = beatmapItems.map(item => ({
+                        ...item,
+                        progress: computeProgress(item.highlights)
+                    }));
+                    renderFromState();
+                } else if (id === 'ignoreGuestDifficulties') {
+                    updateTabCounts();
+                    renderFromState();
+                }
+            });
+        }
+    });
+
+    // Rescan Mode Radios
+    ['rescanModeMapper', 'rescanModeAll'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) {
+            el.addEventListener('change', (e) => {
+                if (e.target.checked) {
+                    const mode = e.target.value;
+                    const prevMode = settings.rescanMode;
+                    settings.rescanMode = mode;
+                    persistSettings();
+                    try { updateSettingsUI(); } catch (e) { }
+
+                    // Trigger refresh if we switched modes while autoRescan is on
+                    if (settings.autoRescan && prevMode !== mode) {
+                        // When switching from "All Maps" to "Specific Mapper", clear the list
+                        // so that we only see the targeted mapper's maps after rescan.
+                        if (mode === 'mapper' && prevMode === 'all') {
+                            beatmapItems = [];
+                            updateTabCounts();
+                            if (listContainer) listContainer.innerHTML = '';
+                            updateEmptyState(listContainer);
+                            saveToStorage();
+                        }
+                        refreshLastDirectory();
+                    }
+                }
+            });
+        }
+    });
+
+    // Group Maps By Song Toggle
+    const groupMapsBySongEl = document.getElementById('groupMapsBySong');
+    if (groupMapsBySongEl) {
+        groupMapsBySongEl.addEventListener('change', (e) => {
+            settings.groupMapsBySong = e.target.checked;
+            saveSettings();
+            // Clear expanded state so old groups don't persist after toggle
+            groupedExpandedKeys.clear();
+            renderFromState();
+        });
+    }
+
+    const volumeSlider = document.getElementById('previewVolume');
+    const volumeValueText = document.getElementById('volumeValue');
+    if (volumeSlider) {
+        volumeSlider.addEventListener('input', (e) => {
+            const vol = parseFloat(e.target.value);
+            settings.volume = vol;
+            if (volumeValueText) volumeValueText.textContent = `${Math.round(vol * 100)}%`;
+            AudioController.updateVolume();
+            saveSettings();
+        });
+    }
+
+
+    // Alias Tag Click Listener (Toggle Ignore)
+    const linkedAliasesList = document.querySelector('#linkedAliasesList');
+    if (linkedAliasesList) {
+        linkedAliasesList.addEventListener('click', (e) => {
+            const tag = e.target.closest('.alias-tag');
+            if (!tag) return;
+
+            const name = tag.dataset.name.toLowerCase();
+            if (!settings.ignoredAliases) settings.ignoredAliases = [];
+
+            const index = settings.ignoredAliases.indexOf(name);
+            if (index > -1) {
+                settings.ignoredAliases.splice(index, 1);
+            } else {
+                settings.ignoredAliases.push(name);
+            }
+
+            persistSettings();
+            updateSettingsUI();
+
+            // Refresh list if autoRescan is on
+            if (settings.autoRescan && settings.rescanMode === 'mapper') {
+                refreshLastDirectory();
+            }
+        });
+    }
+
+    // Rescan Mapper Name Input
+    let rescanMapperTimer = null;
+    if (rescanNameInput) {
+        rescanNameInput.addEventListener('input', (e) => {
+            const value = e.target.value.trim();
+            const isUrl = value.includes('osu.ppy.sh/users/') || value.includes('osu.ppy.sh/u/');
+            const isId = /^\d+$/.test(value);
+
+            settings.rescanMapperName = value;
+            saveSettings();
+
+            if (rescanMapperTimer) clearTimeout(rescanMapperTimer);
+            rescanMapperTimer = setTimeout(async () => {
+                if (!value) {
+                    // Input cleared: Reset all profile-related scanning state
+                    settings.mapperAliases = [];
+                    settings.ignoredAliases = [];
+                    settings.userId = null;
+                    settings.rescanMapperName = '';
+                    settings.embedApiKey = null;
+                    settings.embedLastSynced = null;
+                    saveSettings();
+
+                    beatmapItems = [];
+                    updateTabCounts();
+                    if (listContainer) listContainer.innerHTML = '';
+                    updateEmptyState(listContainer);
+                    saveToStorage();
+
+                    updateSettingsUI();
+                    return;
+                }
+
+                // Only attempt processMapperInput if it's a URL or a new ID.
+                if (isUrl || (isId && value !== settings.userId?.toString())) {
+                    const processed = await processMapperInput(value);
+                    if (processed && processed !== value) {
+                        settings.rescanMapperName = processed;
+                        saveSettings();
+                        updateSettingsUI();
+                    }
+                }
+
+                const currentListContainer = document.querySelector('#listContainer');
+                if (currentListContainer) currentListContainer.innerHTML = '';
+
+                const targetDir = settings.songsDir || lastScannedDirectory;
+                if (!targetDir || !window.beatmapApi?.scanDirectoryOsuFiles) {
+                    updateTabCounts();
+                    renderFromState();
+                    return;
+                }
+
+                try {
+                    const knownFiles = {};
+                    beatmapItems.forEach(item => {
+                        if (item.filePath) knownFiles[item.filePath] = item.dateModified;
+                    });
+
+                    const mapper = getEffectiveMapperName();
+                    const scanDone = startStreamingScan();
+                    await window.beatmapApi.scanDirectoryOsuFiles(targetDir, mapper || null, knownFiles);
+                    await scanDone;
+                } catch (err) {
+                    console.error('Mapper rescan failed:', err);
+                    streamingScanState = null;
+                    setLoading(false);
+                    updateTabCounts();
+                    renderFromState();
+                    showNotification('Rescan Failed', err.message || 'Failed to rescan for maps.', 'error');
+                }
+            }, 800);
+        });
+    }
+
+    // Search and Main Menu
+    if (searchInput) {
+        searchInput.addEventListener('input', (event) => {
+            searchQuery = event.target.value.trim();
+            renderFromState();
+        });
+    }
+
+    const setHeaderMenuOpen = (isOpen) => {
+        if (!headerMenu || !menuToggle) {
+            return;
+        }
+        headerMenu.classList.toggle('is-open', isOpen);
+        menuToggle.setAttribute('aria-expanded', String(isOpen));
+        if (!isOpen && sortDropdown) {
+            sortDropdown.classList.remove('is-open');
+            if (sortTrigger) {
+                sortTrigger.setAttribute('aria-expanded', 'false');
+            }
         }
     };
-    // Keep external UI emitter decoupled from state broadcaster to avoid recursion.
 
-    const refreshLastDirectoryFromUI = () => {
+    if (menuToggle && headerMenu) {
+        menuToggle.addEventListener('click', () => {
+            const isOpen = !headerMenu.classList.contains('is-open');
+            setHeaderMenuOpen(isOpen);
+        });
+    }
+
+    document.addEventListener('click', (event) => {
+        const target = event.target;
+        const clickedSortTrigger = sortTrigger && sortTrigger.contains(target);
+        const clickedMenuToggle = menuToggle && menuToggle.contains(target);
+        const clickedUploadToggle = uploadMenuToggle && uploadMenuToggle.contains(target);
+        const clickedSettingsBtn = settingsBtn && settingsBtn.contains(target);
+
+        const isAnyDialogOpen = (settingsDialog && settingsDialog.open) || (mapperPrompt && mapperPrompt.open) || (aboutDialog && aboutDialog.open) || (changelogDialog && changelogDialog.open);
+
+        if (isAnyDialogOpen) {
+            return;
+        }
+
+        if (clickedSettingsBtn) {
+            return;
+        }
+
+        if (sortDropdown && !sortDropdown.contains(target) && !clickedSortTrigger) {
+            sortDropdown.classList.remove('is-open');
+            if (sortTrigger) {
+                sortTrigger.setAttribute('aria-expanded', 'false');
+            }
+        }
+        if (uploadDropdown && !uploadDropdown.contains(target) && !clickedUploadToggle) {
+            uploadDropdown.classList.remove('is-open');
+            if (uploadMenuToggle) {
+                uploadMenuToggle.setAttribute('aria-expanded', 'false');
+            }
+        }
+        if (headerMenu && menuToggle && !headerMenu.contains(target) && !clickedMenuToggle) {
+            setHeaderMenuOpen(false);
+        }
+
+        // Stop audio preview when clicking outside the timeline
+        if (AudioController.currentId && !target.closest('.list-timeline') && !target.closest('#settingsDialog') && !target.closest('#settingsBtn')) {
+            AudioController.stop();
+        }
+    });
+
+    // Refresh Btn
+    document.querySelector('#refreshBtn')?.addEventListener('click', () => {
         // Ensure any pending background analysis resumes when the user clicks Refresh.
         try {
             if (Array.isArray(beatmapItems) && beatmapItems.length) {
@@ -5224,150 +5077,51 @@ const init = async () => {
             // non-fatal
         }
 
-        return refreshLastDirectory();
-    };
-
-    const toggleTodoFromUI = (itemId) => {
-        if (!itemId) return false;
-        toggleTodo(itemId);
-        return true;
-    };
-
-    const toggleDoneFromUI = (itemId) => {
-        if (!itemId) return false;
-        toggleDone(itemId);
-        return true;
-    };
-
-    const openWebFromUI = (url) => {
-        if (!url) return false;
-        if (window.appInfo?.openExternalUrl) {
-            window.appInfo.openExternalUrl(url);
-        } else {
-            window.open(url, '_blank');
-        }
-        return true;
-    };
-
-    const showFolderFromUI = (path) => {
-        if (!path || !window.beatmapApi?.showItemInFolder) return false;
-        window.beatmapApi.showItemInFolder(path);
-        return true;
-    };
-
-    const clearAllBeatmapsFromUI = async () => {
-        if (!listContainer) return false;
-        const confirmed = await (window.mosuPrompts?.confirmClearAll?.() || Promise.resolve(false));
-
-        if (!confirmed) return false;
-
-        // Keep todoIds and doneIds so they persist across rescans
-        beatmapItems = [];
-        updateTabCounts();
-        listContainer.innerHTML = '';
-        updateEmptyState(listContainer);
-        renderFromState();
-        saveToStorage();
-        showNotification('Cleared', 'All beatmaps have been removed.', 'success');
-        return true;
-    };
-
-    window.mosuActions = {
-        ...(window.mosuActions || {}),
-        importOsuFile: () => loadBeatmapFromDialog(),
-        importByMapper: () => loadBeatmapsByMapper(),
-        importFromFolder: () => loadBeatmapsFromFolder(),
-        refreshLastDirectory: refreshLastDirectoryFromUI,
-        clearAll: clearAllBeatmapsFromUI
-    };
-
-    window.mosuItemActions = {
-        ...(window.mosuItemActions || {}),
-        toggleTodo: toggleTodoFromUI,
-        toggleDone: toggleDoneFromUI,
-        openWeb: openWebFromUI,
-        showFolder: showFolderFromUI
-    };
-
-    const itemDetailsSubscribers = new Set();
-    emitItemDetailsStateToUI = (snapshot = getItemDetailsSnapshot()) => {
-        itemDetailsSubscribers.forEach((callback) => {
-            try {
-                callback(snapshot);
-            } catch (error) {
-                // Non-fatal subscriber error
-            }
-        });
-    };
-
-    window.mosuItemDetails = {
-        ...(window.mosuItemDetails || {}),
-        getState: (itemId) => itemId ? getItemDetailsByIdSnapshot(itemId) : getItemDetailsSnapshot(),
-        subscribe: (callback) => {
-            if (typeof callback !== 'function') return () => { };
-            itemDetailsSubscribers.add(callback);
-            callback(getItemDetailsSnapshot());
-            return () => itemDetailsSubscribers.delete(callback);
-        },
-        setDeadline: (itemId, deadline) => setItemDeadline(itemId, deadline),
-        setTargetStar: (itemId, rating) => setItemTargetStarRating(itemId, rating),
-        setNotes: (itemId, notes) => setItemNotes(itemId, notes)
-    };
-
-    window.mosuLegacyRows = {
-        ...(window.mosuLegacyRows || {}),
-        mountListBox: (container, itemId, index, options) => mountLegacyListBox(container, itemId, index, options),
-        clearListBox: (container) => clearLegacyListBox(container)
-    };
-
-    const viewModelSubscribers = new Set();
-    emitViewModelStateToUI = (snapshot = getViewModelSnapshot()) => {
-        viewModelSubscribers.forEach((callback) => {
-            try {
-                callback(snapshot);
-            } catch (error) {
-                // Non-fatal subscriber error
-            }
-        });
-    };
-
-    window.mosuViewModel = {
-        ...(window.mosuViewModel || {}),
-        getState: () => getViewModelSnapshot(),
-        subscribe: (callback) => {
-            if (typeof callback !== 'function') return () => { };
-            viewModelSubscribers.add(callback);
-            callback(getViewModelSnapshot());
-            return () => viewModelSubscribers.delete(callback);
-        }
-    };
-
-    document.addEventListener('click', (event) => {
-        const target = event.target;
-        const clickedSettingsBtn = settingsBtn && settingsBtn.contains(target);
-
-        const isAnyDialogOpen = (settingsDialog && settingsDialog.open)
-            || (mapperPrompt && mapperPrompt.open)
-            || (songsDirPrompt && songsDirPrompt.open)
-            || (welcomePrompt && welcomePrompt.open)
-            || (firstRunPrompt && firstRunPrompt.open)
-            || (clearAllPrompt && clearAllPrompt.open)
-            || (aboutDialog && aboutDialog.open)
-            || (changelogDialog && changelogDialog.open);
-
-        if (isAnyDialogOpen) {
-            return;
-        }
-
-        if (clickedSettingsBtn) {
-            return;
-        }
-
-        // Stop audio preview when clicking outside the timeline
-        if (AudioController.currentId && !target.closest('.list-timeline') && !target.closest('#settingsDialog') && !target.closest('#settingsBtn')) {
-            AudioController.stop();
-        }
+        refreshLastDirectory();
     });
+
+    // Clear All
+    if (clearAllButton && listContainer) {
+        clearAllButton.addEventListener('click', async () => {
+            const clearDialog = document.querySelector('#clearAllPrompt');
+            if (!clearDialog) return;
+
+            const confirmed = await new Promise((resolve) => {
+                const cancelBtn = document.querySelector('#clearAllCancel');
+                const confirmBtn = document.querySelector('#clearAllConfirm');
+
+                const cleanup = async () => {
+                    await closeDialogWithAnimation(clearDialog);
+                    cancelBtn?.removeEventListener('click', onCancel);
+                    clearDialog.removeEventListener('submit', onSubmit);
+                    clearDialog.removeEventListener('cancel', onCancel);
+                };
+
+                const onCancel = async () => { await cleanup(); resolve(false); };
+                const onSubmit = async (e) => {
+                    e.preventDefault();
+                    await cleanup();
+                    resolve(true);
+                };
+
+                clearDialog.showModal();
+                cancelBtn?.addEventListener('click', onCancel, { once: true });
+                clearDialog.addEventListener('submit', onSubmit, { once: true });
+                clearDialog.addEventListener('cancel', onCancel, { once: true });
+            });
+
+            if (!confirmed) return;
+
+            // Keep todoIds and doneIds so they persist across rescans
+            beatmapItems = [];
+            updateTabCounts();
+            listContainer.innerHTML = '';
+            updateEmptyState(listContainer);
+            renderFromState();
+            saveToStorage();
+            showNotification('Cleared', 'All beatmaps have been removed.', 'success');
+        });
+    }
 
     // Drag and Drop for todo list (pointer-driven for Tauri compatibility)
     if (listContainer) {
@@ -5497,10 +5251,20 @@ const init = async () => {
 
             const draggedId = pointerDragState.draggedId;
             const dropId = pointerDragState.dropTarget.dataset.itemId;
-            if (!dropId) {
+            if (!dropId || dropId === draggedId) {
                 return;
             }
-            reorderTodoIds(draggedId, dropId);
+
+            const fromIndex = todoIds.indexOf(draggedId);
+            const toIndex = todoIds.indexOf(dropId);
+            if (fromIndex === -1 || toIndex === -1) {
+                return;
+            }
+
+            const [movedItem] = todoIds.splice(fromIndex, 1);
+            todoIds.splice(toIndex, 0, movedItem);
+            scheduleSave();
+            renderFromState();
         };
 
         const handlePointerUp = (e) => {
@@ -5515,7 +5279,7 @@ const init = async () => {
             resetPointerDragState();
         };
 
-        window.addEventListener('pointerdown', handlePointerDown);
+        listContainer.addEventListener('pointerdown', handlePointerDown);
         window.addEventListener('pointermove', handlePointerMove, { passive: false });
         window.addEventListener('pointerup', handlePointerUp);
         window.addEventListener('pointercancel', handlePointerUp);
@@ -5608,103 +5372,362 @@ const init = async () => {
 
     initEventDelegation();
     updateSortUI();
+    const srMin = document.getElementById('srMin');
+    const srMax = document.getElementById('srMax');
+    if (srMin) srMin.addEventListener('input', updateSRRangeUI);
+    if (srMax) srMax.addEventListener('input', updateSRRangeUI);
     updateSRRangeUI(null, { rerenderList: false });
 
     renderFromState();
-
-    const promptAndSelectSongsDirectory = async () => {
-        if (settings.songsDir || !window.beatmapApi?.selectDirectory) {
-            return !!settings.songsDir;
-        }
-
-        const confirmed = await (window.mosuPrompts?.confirmSongsDirPrompt?.() || Promise.resolve(false));
-        if (!confirmed) {
-            return false;
-        }
-
-        // Small delay before opening native explorer for focus/animation reasons
-        await new Promise((resolve) => setTimeout(resolve, 400));
-        const dir = await window.beatmapApi.selectDirectory();
-        if (!dir) {
-            return false;
-        }
-
-        settings.songsDir = dir;
-        saveSettings();
-        updateSettingsUI();
-        return true;
-    };
-
-    const promptAndSetMapperName = async (label = 'Enter the mapper name:') => {
-        const mapperValue = await (window.mosuPrompts?.promptMapperName?.({ label }) || Promise.resolve(null));
-        if (!mapperValue) {
-            return false;
-        }
-
-        setLoading(true);
-        const processed = await processMapperInput(mapperValue);
-        setLoading(false);
-        if (!processed) {
-            return false;
-        }
-
-        settings.rescanMapperName = processed;
-        saveSettings();
-        updateSettingsUI();
-        return true;
-    };
 
     // First run wizard
     // On very first launch, offer a choice: import all maps or only maps by a mapper.
     // If user chooses all -> show songs directory prompt only.
     // If user chooses mapper -> show songs directory prompt, then mapper name prompt.
     if (!settings.initialSetupDone) {
-        await (window.mosuPrompts?.showWelcomePrompt?.() || Promise.resolve(false));
+        const welcomeDialog = document.querySelector('#welcomePrompt');
+        const firstRunDialog = document.querySelector('#firstRunPrompt');
+        const songsDirDialog = document.querySelector('#songsDirPrompt');
+        const mapperDialog = document.querySelector('#mapperPrompt');
 
-        const choice = await (window.mosuPrompts?.showFirstRunChoicePrompt?.() || Promise.resolve(null));
+        // Show welcome greeting first
+        if (welcomeDialog) {
+            await new Promise((resolve) => {
+                const continueBtn = document.querySelector('#welcomeContinueBtn');
+                const onContinue = async () => {
+                    await closeDialogWithAnimation(welcomeDialog);
+                    resolve();
+                };
+                welcomeDialog.showModal();
+                continueBtn?.addEventListener('click', onContinue, { once: true });
+                welcomeDialog.addEventListener('cancel', (e) => { e.preventDefault(); }, { once: true });
+            });
+        }
 
-        // If user explicitly chose an option, mark setup done and follow flow
-        if (choice === 'all') {
-            settings.initialSetupDone = true;
-            settings.initialImportChoice = 'all';
-            saveSettings();
+        if (firstRunDialog) {
+            const choice = await new Promise((resolve) => {
+                const allBtn = document.querySelector('#firstRunAllBtn');
+                const mapperBtn = document.querySelector('#firstRunMapperBtn');
 
-            await promptAndSelectSongsDirectory();
-            if (settings.songsDir) {
-                await refreshLastDirectory();
-            }
-        } else if (choice === 'mapper') {
-            settings.initialSetupDone = true;
-            settings.initialImportChoice = 'mapper';
-            saveSettings();
+                const cleanup = async () => {
+                    await closeDialogWithAnimation(firstRunDialog);
+                    allBtn?.removeEventListener('click', onAll);
+                    mapperBtn?.removeEventListener('click', onMapper);
+                    firstRunDialog.removeEventListener('cancel', onCancel);
+                };
 
-            await promptAndSelectSongsDirectory();
-            if (!settings.rescanMapperName) {
-                await promptAndSetMapperName();
-            }
-            if (settings.songsDir && settings.rescanMapperName) {
-                await refreshLastDirectory();
+                const onAll = async () => { await cleanup(); resolve('all'); };
+                const onMapper = async () => { await cleanup(); resolve('mapper'); };
+                const onCancel = async () => { await cleanup(); resolve(null); };
+
+                firstRunDialog.showModal();
+                allBtn?.addEventListener('click', onAll, { once: true });
+                mapperBtn?.addEventListener('click', onMapper, { once: true });
+                firstRunDialog.addEventListener('cancel', onCancel, { once: true });
+            });
+
+            // If user explicitly chose an option, mark setup done and follow flow
+            if (choice === 'all') {
+                settings.initialSetupDone = true;
+                settings.initialImportChoice = 'all';
+                saveSettings();
+
+                // Prompt for songs dir only
+                if (!settings.songsDir && window.beatmapApi?.selectDirectory && songsDirDialog) {
+                    await new Promise((resolve) => {
+                        const cancelBtn = document.querySelector('#songsDirPromptCancel');
+                        songsDirDialog.showModal();
+
+                        const onCancel = async () => {
+                            await closeDialogWithAnimation(songsDirDialog);
+                            cleanup();
+                            resolve();
+                        };
+
+                        const onSubmit = async (event) => {
+                            event.preventDefault();
+                            await closeDialogWithAnimation(songsDirDialog);
+
+                            // Small delay for focus/animation
+                            await new Promise(r => setTimeout(r, 400));
+                            const dir = await window.beatmapApi.selectDirectory();
+                            if (dir) {
+                                settings.songsDir = dir;
+                                saveSettings();
+                                updateSettingsUI();
+                            }
+                            cleanup();
+                            resolve();
+                        };
+
+                        const cleanup = () => {
+                            cancelBtn?.removeEventListener('click', onCancel);
+                            songsDirDialog.removeEventListener('submit', onSubmit);
+                            songsDirDialog.removeEventListener('cancel', onCancel);
+                        };
+
+                        cancelBtn?.addEventListener('click', onCancel, { once: true });
+                        songsDirDialog.addEventListener('submit', onSubmit, { once: true });
+                        songsDirDialog.addEventListener('cancel', onCancel, { once: true });
+                    });
+                }
+
+                if (settings.songsDir) await refreshLastDirectory();
+            } else if (choice === 'mapper') {
+                settings.initialSetupDone = true;
+                settings.initialImportChoice = 'mapper';
+                saveSettings();
+
+                // Ask for songs directory first
+                if (!settings.songsDir && window.beatmapApi?.selectDirectory && songsDirDialog) {
+                    await new Promise((resolve) => {
+                        const cancelBtn = document.querySelector('#songsDirPromptCancel');
+                        songsDirDialog.showModal();
+
+                        const onCancel = async () => {
+                            await closeDialogWithAnimation(songsDirDialog);
+                            cleanup();
+                            resolve();
+                        };
+
+                        const onSubmit = async (event) => {
+                            event.preventDefault();
+                            await closeDialogWithAnimation(songsDirDialog);
+
+                            // Small delay for focus/animation
+                            await new Promise(r => setTimeout(r, 400));
+                            const dir = await window.beatmapApi.selectDirectory();
+                            if (dir) {
+                                settings.songsDir = dir;
+                                saveSettings();
+                                updateSettingsUI();
+                            }
+                            cleanup();
+                            resolve();
+                        };
+
+                        const cleanup = () => {
+                            cancelBtn?.removeEventListener('click', onCancel);
+                            songsDirDialog.removeEventListener('submit', onSubmit);
+                            songsDirDialog.removeEventListener('cancel', onCancel);
+                        };
+
+                        cancelBtn?.addEventListener('click', onCancel, { once: true });
+                        songsDirDialog.addEventListener('submit', onSubmit, { once: true });
+                        songsDirDialog.addEventListener('cancel', onCancel, { once: true });
+                    });
+                }
+
+                // Then ask for mapper name
+                if (!settings.rescanMapperName && mapperDialog) {
+                    await new Promise((resolve) => {
+                        const input = document.querySelector('#mapperNameInput');
+                        const cancelBtn = document.querySelector('#mapperPromptCancel');
+
+                        input.value = '';
+                        mapperDialog.showModal();
+                        input.focus();
+
+                        const cleanup = async () => {
+                            await closeDialogWithAnimation(mapperDialog);
+                            cancelBtn?.removeEventListener('click', onCancel);
+                            mapperDialog.removeEventListener('submit', onSubmit);
+                            mapperDialog.removeEventListener('cancel', onCancel);
+                            resolve();
+                        };
+
+                        const onCancel = async () => { await cleanup(); };
+                        const onSubmit = async (event) => {
+                            event.preventDefault();
+                            const value = input.value.trim();
+                            if (value) {
+                                setLoading(true);
+                                const processed = await processMapperInput(value);
+                                setLoading(false);
+                                settings.rescanMapperName = processed;
+                                saveSettings();
+                                updateSettingsUI();
+                            }
+                            await cleanup();
+                        };
+
+                        cancelBtn?.addEventListener('click', onCancel, { once: true });
+                        mapperDialog.addEventListener('submit', onSubmit, { once: true });
+                        mapperDialog.addEventListener('cancel', onCancel, { once: true });
+                    });
+                }
+
+                if (settings.songsDir && settings.rescanMapperName) {
+                    await refreshLastDirectory();
+                }
             }
         }
     }
-
     if (!settings.rescanMapperName || !settings.songsDir) {
         if (!settings.rescanMapperName && settings.initialImportChoice !== 'all') {
-            await promptAndSetMapperName('Enter your default mapper name:');
+            await new Promise((resolve) => {
+                const dialog = mapperPrompt;
+                const input = document.querySelector('#mapperNameInput');
+                const label = dialog?.querySelector('.prompt-dialog-label');
+                const cancelBtn = document.querySelector('#mapperPromptCancel');
+
+                if (!dialog || !input) {
+                    resolve();
+                    return;
+                }
+
+                if (label) label.textContent = 'Enter your default mapper name:';
+                input.value = '';
+                dialog.showModal();
+                input.focus();
+
+                const cleanup = async () => {
+                    await closeDialogWithAnimation(dialog);
+                    cancelBtn?.removeEventListener('click', onCancel);
+                    dialog.removeEventListener('submit', onSubmit);
+                    dialog.removeEventListener('cancel', onCancel);
+                    if (label) label.textContent = 'Enter the mapper name:';
+                    resolve();
+                };
+
+                const onCancel = async () => { await cleanup(); };
+                const onSubmit = async (event) => {
+                    event.preventDefault();
+                    const value = input.value.trim();
+                    if (value) {
+                        setLoading(true);
+                        const processed = await processMapperInput(value);
+                        setLoading(false);
+                        settings.rescanMapperName = processed;
+                        saveSettings();
+                        updateSettingsUI();
+                    }
+                    await cleanup();
+                };
+
+                cancelBtn?.addEventListener('click', onCancel, { once: true });
+                dialog.addEventListener('submit', onSubmit, { once: true });
+                dialog.addEventListener('cancel', onCancel, { once: true });
+            });
         }
-        if (!settings.songsDir) {
-            await promptAndSelectSongsDirectory();
+        if (!settings.songsDir && window.beatmapApi?.selectDirectory) {
+            await new Promise((resolve) => {
+                const dialog = songsDirPrompt;
+                const cancelBtn = document.querySelector('#songsDirPromptCancel');
+
+                if (!dialog) {
+                    resolve();
+                    return;
+                }
+
+                dialog.showModal();
+
+                const cleanup = async () => {
+                    await closeDialogWithAnimation(dialog);
+                    cancelBtn?.removeEventListener('click', onCancel);
+                    dialog.removeEventListener('submit', onSubmit);
+                    dialog.removeEventListener('cancel', onCancel);
+                    resolve();
+                };
+
+                const onCancel = async () => { await cleanup(); };
+                const onSubmit = async (event) => {
+                    event.preventDefault();
+                    await cleanup();
+
+                    // Small delay before opening native explorer for focus/animation reasons
+                    await new Promise(r => setTimeout(r, 400));
+                    const dir = await window.beatmapApi.selectDirectory();
+                    if (dir) {
+                        settings.songsDir = dir;
+                        saveSettings();
+                        updateSettingsUI();
+                    }
+                };
+
+                cancelBtn?.addEventListener('click', onCancel, { once: true });
+                dialog.addEventListener('submit', onSubmit, { once: true });
+                dialog.addEventListener('cancel', onCancel, { once: true });
+            });
         }
         if (settings.autoRescan && settings.songsDir) {
             await refreshLastDirectory();
         }
     }
 
+    // Check for updates in the background
+    checkForUpdates();
+
+    // Show changelog on first startup after an update
+    if (window.appInfo?.getVersion) {
+        try {
+            const currentVersion = await window.appInfo.getVersion();
+            const lastSeenVersion = localStorage.getItem('mosu_lastSeenVersion');
+            if (lastSeenVersion && lastSeenVersion !== currentVersion) {
+                // Version changed since last run — show changelog
+                showChangelog();
+            }
+            localStorage.setItem('mosu_lastSeenVersion', currentVersion);
+        } catch (e) {
+            // Non-fatal
+        }
+    }
 };
 
-if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', init);
-} else {
-    init();
-}
+const checkForUpdates = async () => {
+    const indicator = document.getElementById('versionIndicator');
+    if (!indicator || !window.appInfo?.checkForUpdates) return;
+
+    try {
+        const result = await window.appInfo.checkForUpdates();
+
+        const current = (result.currentVersion || '').replace(/^v/, '');
+        const latest = (result.latestVersion || '').replace(/^v/, '');
+
+        // If we got an error or no latest version info, just show the current version
+        if (result.error || !latest) {
+            indicator.textContent = `v${current}`;
+            indicator.dataset.tooltip = current ? `Current version: v${current}` : 'Could not check for updates';
+            indicator.className = 'version-indicator up-to-date';
+            indicator.style.display = '';
+            return;
+        }
+
+        // Compare base versions (strip pre-release suffixes like -beta for comparison)
+        const parseVer = (v) => {
+            const parts = v.replace(/-.+$/, '').split('.').map(Number);
+            return [parts[0] || 0, parts[1] || 0, parts[2] || 0];
+        };
+        const cur = parseVer(current);
+        const lat = parseVer(latest);
+
+        // Check if current >= latest (accounting for pre-release: 0.3.0-beta is still 0.3.0)
+        const isUpToDate = cur[0] > lat[0] ||
+            (cur[0] === lat[0] && cur[1] > lat[1]) ||
+            (cur[0] === lat[0] && cur[1] === lat[1] && cur[2] >= lat[2]);
+
+        if (isUpToDate) {
+            indicator.textContent = `v${current}`;
+            indicator.dataset.tooltip = 'You are on the latest version';
+            indicator.className = 'version-indicator up-to-date';
+        } else {
+            indicator.textContent = `v${latest} available`;
+            indicator.dataset.tooltip = `Update available! Click to open download page (current: v${current})`;
+            indicator.className = 'version-indicator update-available';
+            indicator.onclick = () => {
+                if (result.htmlUrl && window.appInfo?.openExternalUrl) {
+                    window.appInfo.openExternalUrl(result.htmlUrl);
+                }
+            };
+        }
+        indicator.style.display = '';
+    } catch {
+        indicator.textContent = '?';
+        indicator.dataset.tooltip = 'Could not check for updates';
+        indicator.className = 'version-indicator error';
+        indicator.style.display = '';
+    }
+};
+
+document.addEventListener('DOMContentLoaded', init);
 

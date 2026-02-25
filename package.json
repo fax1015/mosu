@@ -1,6 +1,6 @@
 {
   "name": "mosu",
-  "version": "0.6.1",
+  "version": "0.7.0",
   "description": "tracks the progress done of osu! maps",
   "keywords": [
     "tauri",
@@ -11,17 +11,25 @@
   "author": "fax1015",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "start": "tauri dev",
-    "dev": "tauri dev",
-    "build": "npm run sync-version && npm run clean && tauri build",
-    "package": "tauri build",
-    "make": "tauri build",
-    "dev:watch": "tauri dev",
+    "start": "npm run dev",
+    "sync:renderer": "node scripts/sync-renderer.js",
+    "dev": "npm run sync:renderer && vite",
+    "vite:dev": "npm run sync:renderer && vite",
+    "vite:build": "npm run sync:renderer && vite build",
+    "build": "npm run sync:renderer && vite build",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "npm run sync-version && npm run clean && tauri build",
+    "package": "npm run tauri:build",
+    "make": "npm run tauri:build",
+    "dev:watch": "npm run tauri:dev",
     "clean": "node scripts/clean-target.js",
     "sync-version": "node scripts/update-version.js"
   },
   "dependencies": {},
   "devDependencies": {
-    "@tauri-apps/cli": "^2.0.0"
+    "@sveltejs/vite-plugin-svelte": "latest",
+    "@tauri-apps/cli": "^2.0.0",
+    "svelte": "latest",
+    "vite": "latest"
   }
 }
