@@ -887,7 +887,7 @@ body.is-dragging-any * {
     margin: 0;
     z-index: 20;
     pointer-events: none;
-    /* Crucial: Let click events pass through to the track/other handles */
+    cursor: pointer;
 }
 
 .range-slider-container input[type="range"]::-webkit-slider-thumb {
@@ -898,7 +898,28 @@ body.is-dragging-any * {
     cursor: pointer;
     background: transparent;
     pointer-events: auto;
-    /* Crucial: Only the thumb itself is clickable */
+}
+
+.range-slider-container input[type="range"]::-moz-range-thumb {
+    width: 38px;
+    height: 38px;
+    cursor: pointer;
+    background: transparent;
+    border: none;
+    pointer-events: auto;
+}
+
+.range-slider-container input[type="range"]::-moz-range-track {
+    background: transparent;
+    border: none;
+}
+
+#srMin {
+    z-index: 21;
+}
+
+#srMax {
+    z-index: 22;
 }
 
 .range-slider-container input[type="range"] {
@@ -1068,6 +1089,11 @@ body.is-dragging-any * {
     position: relative;
     width: 100%;
     contain: layout paint;
+    margin-top: 0;
+}
+
+.list-container>*:first-child {
+    margin-top: 0 !important;
 }
 
 .list-box {
@@ -2383,6 +2409,10 @@ input:checked+.slider:before {
     animation: spin 1s linear infinite;
 }
 
+.refresh-btn.is-pulsing {
+    transform: scale(1.2);
+}
+
 .refresh-btn::after {
     content: '';
     position: absolute;
@@ -2800,6 +2830,15 @@ input:checked+.slider:before {
     min-height: 0;
 }
 
+/* Ensure hidden attribute is respected on all list containers - must have higher specificity */
+.list-container.view-grouped[hidden] {
+    display: none !important;
+}
+
+.list-container[hidden] {
+    display: none !important;
+}
+
 /* ---- Group Row (wrapper) ---- */
 .group-row {
     background: var(--bg-secondary);
@@ -2812,6 +2851,7 @@ input:checked+.slider:before {
     /* force GPU layer for the entire group */
     contain: paint;
     /* major optimization — internal changes don't affect siblings */
+    margin-top: 0;
 }
 
 .group-row.is-expanded {
@@ -3120,6 +3160,12 @@ input:checked+.slider:before {
     border-radius: 1px;
 }
 
+.group-child-item-host {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+}
+
 /* Child list-box: relative, not absolute, smaller visual weight */
 .list-box--group-child {
     position: relative !important;
@@ -3142,6 +3188,19 @@ input:checked+.slider:before {
 .list-box--group-child:hover {
     opacity: 1;
     box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+}
+
+.flat-row {
+    display: block;
+}
+
+.list-box--flow {
+    position: relative !important;
+    left: auto !important;
+    right: auto !important;
+    top: auto !important;
+    margin-top: 0 !important;
+    margin-bottom: var(--list-item-gap);
 }
 
 /* Notifications */

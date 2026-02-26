@@ -339,15 +339,6 @@ const GlobalDatePicker = {
         this.popover.classList.add('date-picker-popover');
         document.body.appendChild(this.popover);
 
-        // Prevent focus stealing when clicking on the popover
-        // This keeps the list item's extra-info-pane open
-        this.popover.addEventListener('mousedown', (e) => {
-            // Only prevent default for non-input elements to allow text selection
-            if (!e.target.closest('input')) {
-                e.preventDefault();
-            }
-        });
-
         // Close on outside click, or toggle close when clicking trigger
         document.addEventListener('mousedown', (e) => {
             if (this.popover.classList.contains('is-open')) {
@@ -520,28 +511,7 @@ const GlobalDatePicker = {
 };
 // Generate a unique user ID for embed syncing
 const generateUserId = () => {
-    const prefix = 'msu';
-    const suffixLength = 6;
-    const letterAlphabet = 'abcdefghijklmnopqrstuvwxyz';
-    const mixedAlphabet = 'abcdefghijklmnopqrstuvwxyz0123456789';
-    const forcedLetterCount = 2;
-    const chars = [];
-
-    if (globalThis.crypto?.getRandomValues) {
-        const randomBytes = new Uint8Array(suffixLength);
-        globalThis.crypto.getRandomValues(randomBytes);
-        for (let i = 0; i < randomBytes.length; i++) {
-            const alphabet = i < forcedLetterCount ? letterAlphabet : mixedAlphabet;
-            chars.push(alphabet[randomBytes[i] % alphabet.length]);
-        }
-        return prefix + chars.join('');
-    }
-
-    for (let i = 0; i < suffixLength; i++) {
-        const alphabet = i < forcedLetterCount ? letterAlphabet : mixedAlphabet;
-        chars.push(alphabet[Math.floor(Math.random() * alphabet.length)]);
-    }
-    return prefix + chars.join('');
+    return Math.floor(Math.random() * 90000000 + 10000000).toString();
 };
 
 const showNotification = (title, message, type = 'default', duration = 5000) => {
@@ -641,7 +611,17 @@ const processMapperInput = async (value) => {
                 console.log('[mosu] Received user data:', userData);
 
                 if (userData && userData.names && userData.names.length > 0) {
+                    // Update user ID to be the osu! user ID
+                    const oldUserId = settings.userId;
+                    settings.userId = userData.id;
                     settings.mapperAliases = userData.names;
+
+                    // If the User ID changed, reset the API key to force re-registration on next sync
+                    if (oldUserId !== settings.userId) {
+                        console.log('[mosu] User ID changed, resetting embed API key...');
+                        settings.embedApiKey = null;
+                        settings.embedLastSynced = null;
+                    }
 
                     if (typeof persistSettings === 'function') {
                         persistSettings();
@@ -658,8 +638,8 @@ const processMapperInput = async (value) => {
 
                     showNotification('osu! Profile Linked', feedback, 'success');
 
-                    // Return the primary mapper name for display in the input
-                    return mainName;
+                    // Return the ID for display in the input
+                    return userData.id.toString();
                 } else {
                     console.warn('[mosu] User data returned but names are empty');
                     settings.mapperAliases = [];
@@ -4687,8 +4667,6 @@ const init = async () => {
 
     // UI State Loading
     const loadSettings = () => {
-        const isCurrentUserIdFormat = (value) => /^msu[a-z0-9]{6}$/i.test(String(value || '').trim());
-
         const raw = localStorage.getItem(SETTINGS_STORAGE_KEY);
         if (raw) {
             try {
@@ -4712,8 +4690,8 @@ const init = async () => {
                 document.documentElement.style.setProperty('--title-lines', 2);
             } catch (e) { }
         }
-        // Generate or migrate userId if missing/legacy
-        if (!isCurrentUserIdFormat(settings.userId)) {
+        // Generate userId if not present (first run)
+        if (!settings.userId) {
             settings.userId = generateUserId();
             persistSettings();
         }
@@ -4857,14 +4835,16 @@ const init = async () => {
         saveSettings();
         updateSettingsUI();
 
-            if (rescanMapperTimer) clearTimeout(rescanMapperTimer);
-            rescanMapperTimer = setTimeout(async () => {
-                if (!value) {
-                    // Input cleared: Reset profile-derived scan aliases only
-                    settings.mapperAliases = [];
-                    settings.ignoredAliases = [];
-                    settings.rescanMapperName = '';
-                    saveSettings();
+        if (rescanMapperTimer) clearTimeout(rescanMapperTimer);
+        rescanMapperTimer = setTimeout(async () => {
+            if (!value) {
+                settings.mapperAliases = [];
+                settings.ignoredAliases = [];
+                settings.userId = null;
+                settings.rescanMapperName = '';
+                settings.embedApiKey = null;
+                settings.embedLastSynced = null;
+                saveSettings();
 
                 beatmapItems = [];
                 updateTabCounts();
@@ -4876,15 +4856,14 @@ const init = async () => {
                 return;
             }
 
-                // Only attempt processMapperInput if it's a URL or a new ID.
-                if (isUrl || isId) {
-                    const processed = await processMapperInput(value);
-                    if (processed && processed !== value) {
-                        settings.rescanMapperName = processed;
-                        saveSettings();
-                        updateSettingsUI();
-                    }
+            if (isUrl || (isId && value !== settings.userId?.toString())) {
+                const processed = await processMapperInput(value);
+                if (processed && processed !== value) {
+                    settings.rescanMapperName = processed;
+                    saveSettings();
+                    updateSettingsUI();
                 }
+            }
 
             const currentListContainer = document.querySelector('#listContainer');
             if (currentListContainer) currentListContainer.innerHTML = '';

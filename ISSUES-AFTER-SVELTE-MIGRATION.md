@@ -1,0 +1,1 @@
+- the maps dont show up on app start, only appearing after the refresh button is clicked on
