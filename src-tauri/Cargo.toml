@@ -1,6 +1,6 @@
 [package]
 name = "mosu"
-version = "0.6.1"
+version = "0.7.0"
 description = "tracks the progress done of osu! maps"
 authors = ["fax1015"]
 license = "MIT"

@@ -1,6 +1,6 @@
 {
   "name": "mosu",
-  "version": "0.6.1",
+  "version": "0.7.0",
   "description": "tracks the progress done of osu! maps",
   "keywords": [
     "tauri",
@@ -12,7 +12,8 @@
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
     "start": "tauri dev",
-    "dev": "tauri dev",
+    "dev": "npm run sync-version && tauri dev",
+    "dev:fresh": "npm run sync-version && node scripts/dev-fresh.js",
     "build": "npm run sync-version && npm run clean && tauri build",
     "package": "tauri build",
     "make": "tauri build",

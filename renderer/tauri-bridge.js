@@ -68,6 +68,7 @@
       invoke('list_directory_osu_files', { dirPath, mapperName }),
     selectDirectory: () => invoke('select_directory'),
     showItemInFolder: (filePath) => invoke('show_item_in_folder', { filePath }),
+    openInTextEditor: (filePath) => invoke('open_in_text_editor', { filePath }),
     convertFileSrc: (filePath) => convertFileSrc(filePath),
     getAudioDuration: (filePath) => invoke('get_audio_duration', { filePath }),
     calculateStarRating: (filePath) => invoke('calculate_star_rating', { filePath }),

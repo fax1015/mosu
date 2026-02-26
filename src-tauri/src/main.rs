@@ -41,6 +41,7 @@ struct ParsedMetadata {
     artist: String,
     creator: String,
     version: String,
+    mode: i32,
     audio: String,
     background: String,
     #[serde(rename = "beatmapSetID")]
@@ -161,6 +162,7 @@ fn normalize_metadata(mut metadata: ParsedMetadata) -> ParsedMetadata {
     if metadata.beatmap_set_id.is_empty() {
         metadata.beatmap_set_id = "Unknown".to_string();
     }
+    metadata.mode = metadata.mode.clamp(0, 3);
     metadata
 }
 
@@ -321,6 +323,10 @@ fn parse_osu_content(content: &str) -> ParsedOsu {
                     } else if eq_ascii_ci(key, "PreviewTime") {
                         if let Ok(v) = value.parse::<i32>() {
                             metadata.preview_time = v;
+                        }
+                    } else if eq_ascii_ci(key, "Mode") {
+                        if let Ok(v) = value.parse::<i32>() {
+                            metadata.mode = v;
                         }
                     }
                 }
@@ -870,6 +876,28 @@ fn open_external_url(url: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn open_in_text_editor(file_path: String) -> Result<(), String> {
+    let path = PathBuf::from(&file_path);
+    if !path.exists() {
+        return Err("Beatmap file not found".to_string());
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        Command::new("notepad")
+            .arg(&path)
+            .spawn()
+            .map_err(|err| err.to_string())?;
+        return Ok(());
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        open::that(path).map_err(|err| err.to_string())
+    }
+}
+
+#[tauri::command]
 async fn check_for_updates(app_handle: tauri::AppHandle) -> UpdateInfoPayload {
     let current_version = resolve_app_version(&app_handle);
     let client = reqwest::Client::builder()
@@ -1329,6 +1357,7 @@ fn main() {
             read_osu_file,
             stat_file,
             show_item_in_folder,
+            open_in_text_editor,
             open_osu_file,
             scan_directory_osu_files,
             list_directory_osu_files,

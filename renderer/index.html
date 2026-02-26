@@ -108,6 +108,9 @@
                             data-label="Progress">Progress</button>
                         <button type="button" class="sort-option" data-sort="starRating" data-label="Star rating">Star
                             rating</button>
+                        <button type="button" class="sort-option" data-sort="difficulty"
+                            data-label="Difficulty name">Difficulty name</button>
+                        <button type="button" class="sort-option" data-sort="mode" data-label="Mode">Mode</button>
                     </div>
                 </div>
                 <div class="control-group">
@@ -339,6 +342,36 @@
                         <span class="slider"></span>
                     </label>
                 </div>
+                <div class="settings-item">
+                    <div class="settings-info">
+                        <p class="settings-label">Show only</p>
+                        <p class="settings-description">Filter the map list by game mode.</p>
+                    </div>
+                    <div class="sort-dropdown settings-mode-dropdown" id="modeFilterDropdown">
+                        <button type="button" class="sort-trigger" id="modeFilterTrigger" aria-expanded="false"
+                            aria-label="Filter maps by mode">
+                            <span class="sort-label" id="modeFilterLabel">All</span>
+                            <span class="sort-direction">
+                                <svg viewBox="0 0 448 512">
+                                    <path
+                                        d="M201.4 406.6c12.5 12.5 32.8 12.5 45.3 0l192-192c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0L224 338.7 54.6 169.4c-12.5-12.5-32.8-12.5-45.3 0s-12.5 32.8 0 45.3l192 192z" />
+                                </svg>
+                            </span>
+                        </button>
+                        <div class="sort-menu" id="modeFilterMenu" role="menu">
+                            <button type="button" class="sort-option mode-filter-option" data-value="all"
+                                data-label="All">All</button>
+                            <button type="button" class="sort-option mode-filter-option" data-value="standard"
+                                data-label="Standard">Standard</button>
+                            <button type="button" class="sort-option mode-filter-option" data-value="taiko"
+                                data-label="Taiko">Taiko</button>
+                            <button type="button" class="sort-option mode-filter-option" data-value="catch"
+                                data-label="Catch">Catch</button>
+                            <button type="button" class="sort-option mode-filter-option" data-value="mania"
+                                data-label="Mania">Mania</button>
+                        </div>
+                    </div>
+                </div>
             </div>
             <div class="settings-section">
                 <h3 class="settings-section-title">Embed Sync</h3>
@@ -352,35 +385,11 @@
                 </div>
                 <div class="settings-item">
                     <div class="settings-info">
-                        <p class="settings-label">Your User ID</p>
-                        <p class="settings-description">Use this ID to sync your todo list to the embed page. Click to
-                            copy.</p>
-                        <div class="user-id-display" id="userIdDisplay" tabindex="0" role="button"
-                            aria-label="Copy user ID">
-                            <code id="userIdValue">Loading...</code>
-                            <svg class="copy-icon" viewBox="0 0 24 24" width="14" height="14">
-                                <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
-                                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
-                            </svg>
-                        </div>
+                        <p class="settings-label">Tracker Display Name</p>
+                        <p class="settings-description">Optional name shown at the top of your embed tracker.</p>
                     </div>
-                </div>
-                <div class="settings-item">
-                    <div class="settings-info">
-                        <p class="settings-label">API Key</p>
-                        <p class="settings-description">Your secret key for syncing. Keep this private. Click to copy.
-                        </p>
-                        <div class="user-id-display" id="apiKeyDisplay" tabindex="0" role="button"
-                            aria-label="Copy API key">
-                            <code id="apiKeyValue">Not generated</code>
-                            <svg class="copy-icon" viewBox="0 0 24 24" width="14" height="14">
-                                <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
-                                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
-                            </svg>
-                        </div>
-                    </div>
-                    <button type="button" class="secondary-button" id="regenerateApiKeyBtn"
-                        data-tooltip="Regenerate API key">Reset Key</button>
+                    <input type="text" class="control-input" id="embedDisplayName"
+                        placeholder="Optional display name...">
                 </div>
                 <div class="settings-item">
                     <div class="settings-info">
@@ -393,6 +402,77 @@
                                 <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
                                 <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
                             </svg>
+                        </div>
+                    </div>
+                </div>
+                <div class="settings-item">
+                    <div class="settings-info">
+                        <p class="settings-label">Tracker Image</p>
+                        <p class="settings-description">Use these for image-based embeds.</p>
+                        <div class="user-id-display" id="imageApiUrlDisplay" tabindex="0" role="button"
+                            aria-label="Copy image URL">
+                            <code id="imageApiUrlValue">Loading...</code>
+                            <svg class="copy-icon" viewBox="0 0 24 24" width="14" height="14">
+                                <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                            </svg>
+                        </div>
+                        <div class="user-id-display" id="imageApiBbcodeDisplay" tabindex="0" role="button"
+                            aria-label="Copy image BBCode">
+                            <code id="imageApiBbcodeValue">Loading...</code>
+                            <svg class="copy-icon" viewBox="0 0 24 24" width="14" height="14">
+                                <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                            </svg>
+                        </div>
+                    </div>
+                </div>
+                <div class="settings-item">
+                    <div class="settings-info">
+                        <div class="embed-advanced-details" id="embedAdvancedDetails">
+                            <button type="button" class="embed-advanced-toggle" id="embedAdvancedToggle"
+                                aria-expanded="false">
+                                Advanced IDs and Key
+                            </button>
+                            <div class="embed-advanced-children">
+                                <div class="embed-advanced-content">
+                                    <div class="settings-item is-nested">
+                                        <div class="settings-info">
+                                            <p class="settings-label">User ID</p>
+                                            <p class="settings-description">Generated once on first startup and used for
+                                                embed
+                                                sync. Starts with "msu". Click to copy.</p>
+                                            <div class="user-id-display" id="userIdDisplay" tabindex="0" role="button"
+                                                aria-label="Copy user ID">
+                                                <code id="userIdValue">Loading...</code>
+                                                <svg class="copy-icon" viewBox="0 0 24 24" width="14" height="14">
+                                                    <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                                                    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1">
+                                                    </path>
+                                                </svg>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div class="settings-item is-nested">
+                                        <div class="settings-info">
+                                            <p class="settings-label">API Key</p>
+                                            <p class="settings-description">Your secret key for syncing. Keep this private.
+                                                Click to copy.</p>
+                                            <div class="user-id-display" id="apiKeyDisplay" tabindex="0" role="button"
+                                                aria-label="Copy API key">
+                                                <code id="apiKeyValue">Not generated</code>
+                                                <svg class="copy-icon" viewBox="0 0 24 24" width="14" height="14">
+                                                    <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                                                    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1">
+                                                    </path>
+                                                </svg>
+                                            </div>
+                                        </div>
+                                        <button type="button" class="secondary-button" id="regenerateApiKeyBtn"
+                                            data-tooltip="Regenerate API key">Reset Key</button>
+                                    </div>
+                                </div>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -473,33 +553,56 @@
                 <span class="changelog-version-tag" id="changelogVersionTag">v0.0.0</span>
             </div>
             <ul class="changelog-list">
-                <h4>mapset grouping</h4>
-                <li>- difficulties from the same mapset can now be grouped into
-                    expandable
-                    sections (rejoice!!)
-                    <br><br>
-                    - click on any difficulty in the group header to scroll directly to that
-                    difficulty
-                    <br><br>
-                    - you can toggle it on and off in the settings
+                <h4>code refactor</h4>
+                <li>- the app was getting a little too unwieldy, so i refactored the code to be more organized
                 </li>
-                <h4>write notes</h4>
-                <li>- you can now write notes for each map
-                </li>
-                <h4>sort by star rating</h4>
-                <li>- i added another package just for this (rosu-pp)
-                </li>
-                <h4>alias searching</h4>
-                <li>- the app now searches for all previous names of a mapper
-                    <br><br>
-                    - you can change which names are used in the settings
+                <h4>map preview</h4>
+                <li>- added a map preview feature to visualize beatmaps (all modes supported!!!!)
                 </li>
             </ul>
         </div>
     </dialog>
 
+    <div class="map-preview-popup" id="mapPreviewPopup" hidden>
+        <div class="map-preview-header">
+            <div class="map-preview-headings">
+                <div class="map-preview-title-row">
+                    <p class="map-preview-title" id="mapPreviewTitle">Map Preview</p>
+                    <span class="map-preview-version" id="mapPreviewVersion"></span>
+                </div>
+                <p class="map-preview-stats" id="mapPreviewStats">Loading preview...</p>
+            </div>
+            <button type="button" class="icon-button close-settings-btn map-preview-close" id="closeMapPreviewBtn"
+                aria-label="Close map preview" data-tooltip="Close preview">
+                <svg viewBox="0 0 384 512">
+                    <path
+                        d="M342.6 150.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0L192 210.7 86.6 105.4c-12.5-12.5-32.8-12.5-45.3 0s-12.5 32.8 0 45.3L146.7 256 41.4 361.4c-12.5 12.5-12.5 32.8 0 45.3s32.8 12.5 45.3 0L192 301.3 297.4 406.6c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L237.3 256 342.6 150.6z" />
+                </svg>
+            </button>
+        </div>
+        <div class="map-preview-canvas-wrap">
+            <canvas id="mapPreviewCanvas" class="map-preview-canvas"></canvas>
+            <div class="map-preview-toggle-indicator" id="mapPreviewToggleIndicator" aria-hidden="true">
+                <svg class="map-preview-toggle-icon map-preview-toggle-icon--play" viewBox="0 0 384 512">
+                    <path
+                        d="M73 39c-14.8-8.5-33.1-8.7-48-.6S0 54.1 0 71v370c0 16.9 9 32.5 25 41.6s33.2 8.8 48 .6l304-185c14.2-8.6 23-24 23-40.8s-8.8-32.2-23-40.8L73 39z" />
+                </svg>
+                <svg class="map-preview-toggle-icon map-preview-toggle-icon--pause" viewBox="0 0 320 512">
+                    <path
+                        d="M48 64C21.5 64 0 85.5 0 112V400c0 26.5 21.5 48 48 48H80c26.5 0 48-21.5 48-48V112c0-26.5-21.5-48-48-48H48zM240 64c-26.5 0-48 21.5-48 48V400c0 26.5 21.5 48 48 48h32c26.5 0 48-21.5 48-48V112c0-26.5-21.5-48-48-48H240z" />
+                </svg>
+            </div>
+        </div>
+        <div class="map-preview-controls">
+            <button type="button" class="secondary-button map-preview-play-btn" id="mapPreviewPlayBtn">Play</button>
+            <canvas id="mapPreviewTimeline" class="list-timeline map-preview-timeline" aria-label="Preview timeline"></canvas>
+            <span class="map-preview-time-label" id="mapPreviewTimeLabel">0:00 / 0:00</span>
+        </div>
+    </div>
+
     <script src="tauri-bridge.js"></script>
-    <script src="renderer.js"></script>
+
+    <script type="module" src="modules/Main.js"></script>
 </body>
 
 </html>
