@@ -16,7 +16,7 @@ import { showNotification } from '../components/NotificationSystem.js';
 import { closeDialogWithAnimation } from '../ui/DialogManager.js';
 import { createDropdownMenu } from '../ui/DropdownMenu.js';
 import { updateSortUI, updateSRRangeUI, setupSRRangeResizeObserver, updateVersionLabels } from '../ui/SettingsUI.js';
-import { renderFromState, updateTabCounts, setLoading, updateProgress, updateEmptyState } from '../ui/StateRenderer.js';
+import { renderFromState, updateTabCounts, updateListItemElement, setLoading, updateProgress, updateEmptyState } from '../ui/StateRenderer.js';
 import { initEventDelegation } from '../interaction/EventDelegation.js';
 import { AudioController } from '../services/AudioController.js';
 import { initMapPreview, openMapPreview } from '../services/MapPreview.js';
@@ -1515,15 +1515,17 @@ export const init = async (callbacks = {}) => {
             }
             updateTabCounts();
             Persistence.scheduleSave();
-            // Only update the specific element instead of re-rendering the whole list
-            import('../ui/StateRenderer.js').then(({ updateListItemElement }) => {
+            if (Store.viewMode === 'todo') {
+                // Todo mode list membership changed, so the list must be rebuilt now.
+                renderFromState();
+            } else {
                 updateListItemElement(itemId, null, {
                     todoIds: Store.todoIds,
                     doneIds: Store.doneIds,
                     viewMode: Store.viewMode,
                     beatmapItems: Store.beatmapItems
                 });
-            });
+            }
         },
         toggleDone: (itemId) => {
             const wasDone = Store.doneIds.includes(itemId);

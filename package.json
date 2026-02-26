@@ -1,7 +1,6 @@
 {
   "name": "mosu",
   "version": "0.7.0",
-  "version": "0.7.0",
   "description": "tracks the progress done of osu! maps",
   "keywords": [
     "tauri",
@@ -24,10 +23,7 @@
   },
   "dependencies": {},
   "devDependencies": {
-    "@sveltejs/vite-plugin-svelte": "latest",
-    "@tauri-apps/cli": "^2.0.0",
-    "svelte": "latest",
-    "vite": "latest"
+    "@tauri-apps/cli": "^2.0.0" 
   }
 }
 
