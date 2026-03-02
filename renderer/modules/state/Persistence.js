@@ -19,7 +19,8 @@ import {
 
 import {
     serializeHighlights,
-    deserializeHighlights
+    deserializeHighlights,
+    computeProgress
 } from '../utils/Helpers.js';
 
 import {
@@ -45,6 +46,76 @@ import {
     setStarRatingQueue,
     setStarRatingTotal
 } from './Store.js';
+
+// ============================================
+// Web Worker for Offloading JSON.stringify
+// ============================================
+
+let storageWorker = null;
+let workerMessageId = 0;
+const pendingWorkerMessages = new Map();
+
+/**
+ * Initialize the storage worker lazily
+ * @returns {Worker|null} The worker instance or null if not supported
+ */
+function getStorageWorker() {
+    if (!storageWorker) {
+        try {
+            storageWorker = new Worker('./renderer/modules/workers/StorageWorker.js');
+            storageWorker.onmessage = handleWorkerMessage;
+            storageWorker.onerror = handleWorkerError;
+        } catch (e) {
+            // Worker creation failed (e.g., not supported), will fallback to main thread
+            storageWorker = null;
+        }
+    }
+    return storageWorker;
+}
+
+/**
+ * Handle messages from the storage worker
+ * @param {MessageEvent} event - The message event from the worker
+ */
+function handleWorkerMessage(event) {
+    const { result, error, id } = event.data;
+    const pending = pendingWorkerMessages.get(id);
+
+    if (!pending) return;
+
+    pendingWorkerMessages.delete(id);
+
+    if (error) {
+        // Worker failed, fallback to main thread
+        pending.fallback();
+    } else {
+        // Success - save the stringified result
+        try {
+            localStorage.setItem(STORAGE_KEY, result);
+        } catch (storageError) {
+            // Storage may be full
+            pending.handleStorageError(storageError);
+        }
+    }
+}
+
+/**
+ * Handle worker errors
+ * @param {ErrorEvent} event - The error event from the worker
+ */
+function handleWorkerError(event) {
+    // On worker error, fail all pending operations and fallback to main thread
+    pendingWorkerMessages.forEach((pending) => {
+        pending.fallback();
+    });
+    pendingWorkerMessages.clear();
+
+    // Disable worker for future operations
+    if (storageWorker) {
+        storageWorker.terminate();
+        storageWorker = null;
+    }
+}
 
 // ============================================
 // Save to Storage
@@ -91,13 +162,39 @@ export function saveToStorage({ showNotification } = {}) {
         })),
     };
 
-    try {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
-    } catch (error) {
+    // Helper to handle storage errors
+    const handleStorageError = (error) => {
         // Storage may be full
         if (showNotification) {
             showNotification('Storage Full', 'Could not save data. Try clearing some beatmaps.', 'error');
         }
+    };
+
+    // Helper for main thread fallback stringify
+    const fallbackToMainThread = () => {
+        try {
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+        } catch (error) {
+            handleStorageError(error);
+        }
+    };
+
+    // Try to use Web Worker for JSON.stringify to avoid blocking main thread
+    const worker = getStorageWorker();
+    if (worker) {
+        const id = ++workerMessageId;
+
+        // Store pending operation for callback handling
+        pendingWorkerMessages.set(id, {
+            fallback: fallbackToMainThread,
+            handleStorageError: handleStorageError
+        });
+
+        // Post payload to worker for stringification
+        worker.postMessage({ payload, id });
+    } else {
+        // Worker not available, fallback to main thread
+        fallbackToMainThread();
     }
 }
 
@@ -130,10 +227,13 @@ export function scheduleSave({ scheduleEmbedSync } = {}) {
  * @returns {Object} Reconstructed beatmap item
  */
 function buildItemFromCache(cached) {
+    const highlights = cached.highlights ? deserializeHighlights(cached.highlights) : [];
+
     return {
         ...cached,
         coverUrl: '', // Let UI calculate this via beatmapApi.convertFileSrc
-        highlights: cached.highlights ? deserializeHighlights(cached.highlights) : [],
+        highlights,
+        progress: computeProgress(highlights, settings),
         dateModified: cached.dateModified ?? 0,
         id: cached.id ?? createItemId(cached.filePath),
         starRating: isValidStarRating(cached.starRating) ? cached.starRating : null,

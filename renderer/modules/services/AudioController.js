@@ -47,12 +47,27 @@ export const AudioController = {
      * Initialize the audio controller
      */
     init() {
-        this.audio.addEventListener('play', () => { this.isPlaying = true; this.startTick(); });
-        this.audio.addEventListener('pause', () => { this.isPlaying = false; });
-        this.audio.addEventListener('ended', () => { this.isPlaying = false; });
+        this.audio.addEventListener('play', () => {
+            this.isPlaying = true;
+            this.startTick();
+        });
+        this.audio.addEventListener('pause', () => {
+            this.isPlaying = false;
+            this._stopTick();
+        });
+        this.audio.addEventListener('ended', () => {
+            this.isPlaying = false;
+            this._stopTick();
+            this._clearPlayhead();
+            this.audio.currentTime = 0;
+            this.currentItemId = null;
+        });
         this.audio.addEventListener('error', (e) => {
             console.error('Audio playback error:', e);
             this.isPlaying = false;
+            this._stopTick();
+            this._clearPlayhead();
+            this.currentItemId = null;
             showNotification('Audio Error', 'Failed to play audio preview.', 'error');
         });
         this.updateVolume();
@@ -86,6 +101,7 @@ export const AudioController = {
         if (this.currentItemId !== itemId) {
             // Clear playhead on the previous item's timeline
             if (this.currentItemId) {
+                this._clearPlayhead();
                 const prevEl = document.querySelector(`[data-item-id="${this.currentItemId}"]`);
                 if (prevEl && callbacks.onStop) {
                     callbacks.onStop(this.currentItemId);
@@ -191,12 +207,13 @@ export const AudioController = {
      * @private
      */
     startTick() {
+        this._stopTick();
         const tick = () => {
             if (!this.isPlaying || !this.currentItemId) return;
             this.drawPlayhead();
-            requestAnimationFrame(tick);
+            this.playheadAnimation = requestAnimationFrame(tick);
         };
-        requestAnimationFrame(tick);
+        this.playheadAnimation = requestAnimationFrame(tick);
     },
 
     /**
@@ -247,6 +264,12 @@ export const AudioController = {
         // Get the item and pass it directly to avoid wrong highlights
         const item = beatmapItems.find(i => i.id === this.currentItemId);
         applyTimelineToBox(el, item);
+    },
+
+    _stopTick() {
+        if (!this.playheadAnimation) return;
+        cancelAnimationFrame(this.playheadAnimation);
+        this.playheadAnimation = null;
     }
 };
 

@@ -86,6 +86,38 @@ export const formatDuration = (ms) => {
     return `${minutes}:${seconds.toString().padStart(2, '0')}`;
 };
 
+export const clampProgressValue = (progress) => {
+    if (typeof progress !== 'number' || !Number.isFinite(progress)) {
+        return 0;
+    }
+
+    return Math.min(1, Math.max(0, progress));
+};
+
+export const hasResolvedDuration = (item) => (
+    typeof item?.durationMs === 'number'
+    && Number.isFinite(item.durationMs)
+    && item.durationMs > 0
+);
+
+export const isProgressPending = (item) => (
+    Boolean(item?.progressPending)
+    || (!hasResolvedDuration(item) && Boolean(item?.audio))
+);
+
+export const formatProgressLabel = (item, isDone = false) => {
+    if (isDone) {
+        return '100%';
+    }
+
+    if (isProgressPending(item)) {
+        return '--';
+    }
+
+    const progress = clampProgressValue(item?.progress);
+    return `${Math.round(progress * 100)}%`;
+};
+
 /**
  * Parse highlight ranges from a raw string
  * @param {string} raw - Raw highlight string (e.g., "0.1-0.5,0.7-0.9")
@@ -180,10 +212,10 @@ export const computeProgress = (ranges, settings = { ignoreStartAndBreaks: false
         populated += breakSum; // Count breaks into progress
         total = Math.max(0.001, 1.0 - firstStart); // Ignore start
 
-        return Math.min(1.0, populated / total);
+        return clampProgressValue(populated / total);
     }
 
-    return Math.min(1.0, populated);
+    return clampProgressValue(populated);
 };
 
 /**
@@ -202,8 +234,9 @@ export const normalizeMetadata = (metadata) => ({
     coverUrl: metadata?.coverUrl || '',
     coverPath: metadata?.coverPath || '',
     highlights: metadata?.highlights || [],
-    progress: metadata?.progress ?? 0,
+    progress: clampProgressValue(metadata?.progress),
     durationMs: metadata?.durationMs ?? null,
+    audio: metadata?.audio || '',
     previewTime: metadata?.previewTime ?? -1,
     dateAdded: metadata?.dateAdded ?? 0,
     dateModified: metadata?.dateModified ?? 0,
@@ -212,6 +245,7 @@ export const normalizeMetadata = (metadata) => ({
     mode: Number.isFinite(metadata?.mode) ? Math.min(Math.max(metadata.mode, 0), 3) : 0,
     deadline: metadata?.deadline ?? null,
     targetStarRating: metadata?.targetStarRating ?? null,
+    progressPending: Boolean(metadata?.progressPending),
     starRating: (typeof metadata?.starRating === 'number' && Number.isFinite(metadata.starRating) && metadata.starRating > 0)
         ? metadata.starRating
         : null,

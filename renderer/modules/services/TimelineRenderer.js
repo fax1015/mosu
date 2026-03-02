@@ -135,13 +135,17 @@ export const applyTimelineToBox = (box, itemOrIndex, callbacks = {}) => {
 
         ranges = item?.highlights || [];
 
+        const objectRanges = ranges.filter((range) => range.type === 'object' || !range.type);
+        const nonObjectRanges = ranges.filter((range) => range.type === 'break' || range.type === 'bookmark');
         const hasProgress = Number(item?.progress || box.dataset.progress || 0) > 0;
         if (!ranges.length && hasProgress) {
             // Use a stable index for fallback visual variety (the box's render index)
             const fallbackIndex = Number(box.dataset.renderIndex || 0);
             const fallback = fallbackIndex % 2 === 0 ? '0.1-0.18,0.42-0.52,0.76-0.96' : '0.15-0.22,0.58-0.72';
             ranges = parseHighlights(fallback);
-        } else if (!hasProgress) {
+        } else if (!objectRanges.length && nonObjectRanges.length) {
+            ranges = nonObjectRanges;
+        } else if (!hasProgress && !nonObjectRanges.length) {
             ranges = [];
         }
     }

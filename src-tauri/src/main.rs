@@ -254,6 +254,7 @@ impl OsuSection {
 }
 
 fn parse_osu_content(content: &str) -> ParsedOsu {
+    const SLIDER_GAP_FILL_BEATS: f64 = 2.0;
     let mut metadata = ParsedMetadata {
         preview_time: -1,
         star_rating: -1.0,
@@ -266,6 +267,7 @@ fn parse_osu_content(content: &str) -> ParsedOsu {
     let mut hit_starts: Vec<i32> = Vec::with_capacity(512);
     let mut hit_ends: Vec<i32> = Vec::with_capacity(512);
     let mut hit_types: Vec<i32> = Vec::with_capacity(512);
+    let mut hit_gap_thresholds: Vec<i32> = Vec::with_capacity(512);
     let mut break_periods: Vec<TimeRange> = Vec::with_capacity(8);
     let mut bookmarks: Vec<i32> = Vec::with_capacity(32);
 
@@ -388,26 +390,26 @@ fn parse_osu_content(content: &str) -> ParsedOsu {
                 let start_time = csv_field(trimmed, 2).unwrap_or("0").trim().parse::<i32>().unwrap_or(0);
                 let obj_type = csv_field(trimmed, 3).unwrap_or("0").trim().parse::<i32>().unwrap_or(0);
                 let mut end_time = start_time;
+                let mut active_beat = 60000.0 / 120.0;
+                let mut active_sv = 1.0;
+
+                for &(tp_time, beat_length, uninherited) in &timing_points {
+                    if tp_time > start_time {
+                        break;
+                    }
+                    if uninherited {
+                        active_beat = beat_length;
+                        active_sv = 1.0;
+                    } else if beat_length < 0.0 {
+                        active_sv = -100.0 / beat_length;
+                    }
+                }
 
                 if obj_type & 2 != 0 {
                     // Slider
                     if field_count >= 8 {
                         let slides = csv_field(trimmed, 6).unwrap_or("1").trim().parse::<f64>().unwrap_or(1.0);
                         let length = csv_field(trimmed, 7).unwrap_or("0").trim().parse::<f64>().unwrap_or(0.0);
-
-                        let mut active_beat = 60000.0 / 120.0;
-                        let mut active_sv = 1.0;
-                        for &(tp_time, beat_length, uninherited) in &timing_points {
-                            if tp_time > start_time {
-                                break;
-                            }
-                            if uninherited {
-                                active_beat = beat_length;
-                                active_sv = 1.0;
-                            } else if beat_length < 0.0 {
-                                active_sv = -100.0 / beat_length;
-                            }
-                        }
 
                         let duration =
                             (length / (slider_multiplier * 100.0 * active_sv)) * active_beat * slides;
@@ -433,7 +435,8 @@ fn parse_osu_content(content: &str) -> ParsedOsu {
                 if let Some(prev_type) = hit_types.last() {
                     if prev_type & 2 != 0 {
                         if let Some(prev_end) = hit_ends.last_mut() {
-                            if *prev_end < start_time {
+                            let prev_gap_threshold = hit_gap_thresholds.last().copied().unwrap_or(0);
+                            if *prev_end < start_time && start_time - *prev_end <= prev_gap_threshold {
                                 *prev_end = start_time;
                             }
                         }
@@ -443,6 +446,11 @@ fn parse_osu_content(content: &str) -> ParsedOsu {
                 hit_starts.push(start_time);
                 hit_ends.push(end_time.max(start_time));
                 hit_types.push(obj_type);
+                hit_gap_thresholds.push(if obj_type & 2 != 0 {
+                    (active_beat * SLIDER_GAP_FILL_BEATS).max(0.0).floor() as i32
+                } else {
+                    0
+                });
             }
             _ => {}
         }

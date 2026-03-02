@@ -14,6 +14,18 @@ import { scheduleTimelineBatchRender, cancelTimelineBatchRender } from '../servi
 /** @type {number} Virtual item height including gap */
 export const VIRTUAL_ITEM_HEIGHT = 182; // 170px + 12px gap
 
+/**
+ * Get the scrollable main container element
+ * @returns {HTMLElement|null}
+ */
+const getScrollContainer = () => document.querySelector('.main-container');
+
+/** @type {number} Maximum items to render per frame during initial render */
+const MAX_ITEMS_PER_FRAME = 3;
+
+/** @type {number} Maximum items to render per frame during scroll */
+const MAX_ITEMS_PER_FRAME_SCROLL = 5;
+
 // ============================================
 // State
 // ============================================
@@ -27,6 +39,12 @@ let cachedContainerTop = 0;
 /** @type {number|null} RAF id for virtual list sync */
 let virtualListRaf = null;
 
+/** @type {number|null} RAF id for chunked render */
+let chunkedRenderRaf = null;
+
+/** @type {boolean} Whether a chunked render is in progress */
+let isChunkedRenderInProgress = false;
+
 /** @type {number} Token for grouped render pass */
 let groupedRenderPassToken = 0;
 
@@ -37,8 +55,75 @@ const batchRenderTimelines = [];
 let cachedCallbacks = null;
 
 // ============================================
-// Virtual List Functions
+// Chunked Rendering
 // ============================================
+
+/**
+ * Chunked virtual list renderer - adds items in small batches across frames
+ * to maintain responsiveness during tab switches and large renders.
+ * @param {HTMLElement} container - List container
+ * @param {Array<number>} indicesToRender - Indices of items to render
+ * @param {Set<string>} currentIdsInDom - Set of IDs already in DOM
+ * @param {Object} callbacks - Callback functions
+ * @param {number} maxPerFrame - Maximum items to render per frame
+ */
+const renderVirtualListChunked = (container, indicesToRender, currentIdsInDom, callbacks, maxPerFrame) => {
+    // Cancel any in-progress chunked render
+    if (chunkedRenderRaf) {
+        cancelAnimationFrame(chunkedRenderRaf);
+        chunkedRenderRaf = null;
+    }
+
+    isChunkedRenderInProgress = true;
+    let currentIndex = 0;
+
+    const renderChunk = () => {
+        if (!container.isConnected) {
+            isChunkedRenderInProgress = false;
+            return;
+        }
+
+        const fragment = document.createDocumentFragment();
+        const endIndex = Math.min(currentIndex + maxPerFrame, indicesToRender.length);
+        let addedCount = 0;
+
+        for (let i = currentIndex; i < endIndex; i++) {
+            const itemIndex = indicesToRender[i];
+            const item = itemsToRender[itemIndex];
+
+            if (!item || currentIdsInDom.has(item.id)) continue;
+
+            const el = buildListItem(item, itemIndex, callbacks);
+            el.dataset.renderIndex = itemIndex;
+            el.style.top = `${itemIndex * VIRTUAL_ITEM_HEIGHT}px`;
+            fragment.appendChild(el);
+            batchRenderTimelines.push({ el, index: itemIndex });
+            addedCount++;
+        }
+
+        if (addedCount > 0) {
+            container.appendChild(fragment);
+        }
+
+        currentIndex = endIndex;
+
+        if (currentIndex < indicesToRender.length) {
+            // More items to render - schedule next chunk
+            chunkedRenderRaf = requestAnimationFrame(renderChunk);
+        } else {
+            // All items rendered
+            isChunkedRenderInProgress = false;
+            chunkedRenderRaf = null;
+            scheduleTimelineBatchRender();
+            if (callbacks.updateEmptyState) {
+                callbacks.updateEmptyState(container);
+            }
+        }
+    };
+
+    // Start chunked rendering
+    chunkedRenderRaf = requestAnimationFrame(renderChunk);
+};
 
 /**
  * Synchronize the virtual list - renders visible items and removes off-screen items
@@ -49,8 +134,10 @@ let cachedCallbacks = null;
  * @param {Function} callbacks.scheduleSave - Function to schedule a save
  * @param {Array<Object>} callbacks.beatmapItems - All beatmap items
  * @param {string} callbacks.viewMode - Current view mode
+ * @param {Object} [options] - Options
+ * @param {boolean} [options.chunked=false] - Whether to use chunked rendering
  */
-export const syncVirtualList = (callbacks) => {
+export const syncVirtualList = (callbacks, options = {}) => {
     const container = document.querySelector('#listContainer');
     if (!container) return;
 
@@ -61,14 +148,15 @@ export const syncVirtualList = (callbacks) => {
     const effectiveCallbacks = callbacks || cachedCallbacks;
     if (!effectiveCallbacks) return;
 
-    const scrollTop = window.scrollY;
-    const windowHeight = window.innerHeight;
+    const scrollContainer = getScrollContainer();
+    const scrollTop = scrollContainer ? scrollContainer.scrollTop : 0;
+    const containerHeight = scrollContainer ? scrollContainer.clientHeight : window.innerHeight;
     const containerTop = cachedContainerTop;
 
     // Calculate which items are in view
     // The visible area is the intersection of the viewport and the container's items
     const viewportTop = scrollTop;
-    const viewportBottom = scrollTop + windowHeight;
+    const viewportBottom = scrollTop + containerHeight;
 
     // Item positions are relative to containerTop
     // Item i spans from containerTop + (i * VIRTUAL_ITEM_HEIGHT) to containerTop + ((i+1) * VIRTUAL_ITEM_HEIGHT)
@@ -109,27 +197,45 @@ export const syncVirtualList = (callbacks) => {
         }
     });
 
-    // Add elements that just came into view but aren't in DOM yet
-    const fragment = document.createDocumentFragment();
+    // Collect indices of items that need to be rendered
+    const indicesToRender = [];
     for (let i = startIndex; i < endIndex; i++) {
         const item = itemsToRender[i];
-        if (!currentIdsInDom.has(item.id)) {
+        if (item && !currentIdsInDom.has(item.id)) {
+            indicesToRender.push(i);
+        }
+    }
+
+    // Determine render strategy based on number of items
+    const isLargeRender = indicesToRender.length > MAX_ITEMS_PER_FRAME;
+    const useChunked = options.chunked !== false && isLargeRender;
+
+    if (useChunked) {
+        // Use chunked rendering for large initial paints (reduces INP)
+        renderVirtualListChunked(
+            container,
+            indicesToRender,
+            currentIdsInDom,
+            effectiveCallbacks,
+            MAX_ITEMS_PER_FRAME
+        );
+    } else {
+        // Use synchronous rendering for small updates (scrolling)
+        const fragment = document.createDocumentFragment();
+        for (const i of indicesToRender) {
+            const item = itemsToRender[i];
             const el = buildListItem(item, i, effectiveCallbacks);
             el.dataset.renderIndex = i;
             el.style.top = `${i * VIRTUAL_ITEM_HEIGHT}px`;
             fragment.appendChild(el);
-
-            // Render timeline after adding to DOM fragment
             batchRenderTimelines.push({ el, index: i });
         }
-    }
-    container.appendChild(fragment);
+        container.appendChild(fragment);
+        scheduleTimelineBatchRender();
 
-    // Process timeline rendering in small RAF batches
-    scheduleTimelineBatchRender();
-
-    if (effectiveCallbacks.updateEmptyState) {
-        effectiveCallbacks.updateEmptyState(container);
+        if (effectiveCallbacks.updateEmptyState) {
+            effectiveCallbacks.updateEmptyState(container);
+        }
     }
 };
 
@@ -149,6 +255,7 @@ export const renderVirtualList = (listContainer, items, callbacks) => {
     // Cancel any in-flight incremental grouped render when switching modes.
     groupedRenderPassToken += 1;
     cancelTimelineBatchRender();
+    cancelChunkedRender();
     itemsToRender = items;
 
     // Cache callbacks for use by syncVirtualList during scroll events
@@ -177,10 +284,13 @@ export const renderVirtualList = (listContainer, items, callbacks) => {
     }
 
     // Measure containerTop now while layout is stable.
+    const scrollContainer = getScrollContainer();
     const rect = listContainer.getBoundingClientRect();
-    cachedContainerTop = rect.top + window.scrollY;
+    const scrollContainerRect = scrollContainer ? scrollContainer.getBoundingClientRect() : { top: 0 };
+    cachedContainerTop = rect.top - scrollContainerRect.top;
 
-    syncVirtualList(callbacks);
+    // Use chunked rendering for initial render to improve INP
+    syncVirtualList(callbacks, { chunked: true });
 };
 
 /**
@@ -221,8 +331,11 @@ export const scrollToItem = (index, behavior = 'smooth') => {
     const container = document.querySelector('#listContainer');
     if (!container) return;
 
+    const scrollContainer = getScrollContainer();
+    if (!scrollContainer) return;
+
     const scrollY = cachedContainerTop + (index * VIRTUAL_ITEM_HEIGHT);
-    window.scrollTo({ top: scrollY, behavior });
+    scrollContainer.scrollTo({ top: scrollY, behavior });
 };
 
 /**
@@ -233,12 +346,13 @@ export const getVisibleRange = () => {
     const container = document.querySelector('#listContainer');
     if (!container) return { startIndex: 0, endIndex: 0 };
 
-    const scrollTop = window.scrollY;
-    const windowHeight = window.innerHeight;
+    const scrollContainer = getScrollContainer();
+    const scrollTop = scrollContainer ? scrollContainer.scrollTop : 0;
+    const containerHeight = scrollContainer ? scrollContainer.clientHeight : window.innerHeight;
     const containerTop = cachedContainerTop;
 
     const viewportTop = scrollTop;
-    const viewportBottom = scrollTop + windowHeight;
+    const viewportBottom = scrollTop + containerHeight;
 
     const firstVisibleItem = Math.floor((viewportTop - containerTop) / VIRTUAL_ITEM_HEIGHT);
     const lastVisibleItem = Math.ceil((viewportBottom - containerTop) / VIRTUAL_ITEM_HEIGHT);
@@ -310,6 +424,17 @@ export const cancelSync = () => {
         cancelAnimationFrame(virtualListRaf);
         virtualListRaf = null;
     }
+};
+
+/**
+ * Cancel any in-progress chunked rendering
+ */
+export const cancelChunkedRender = () => {
+    if (chunkedRenderRaf) {
+        cancelAnimationFrame(chunkedRenderRaf);
+        chunkedRenderRaf = null;
+    }
+    isChunkedRenderInProgress = false;
 };
 
 /**

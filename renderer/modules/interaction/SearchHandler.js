@@ -10,7 +10,13 @@ import { searchQuery, setSearchQuery } from '../state/Store.js';
 // ============================================
 
 /** @type {number} Debounce delay for search input in ms */
-export const SEARCH_DEBOUNCE_MS = 150;
+export const SEARCH_DEBOUNCE_MS = 100; // Reduced from 150ms for snappier response
+
+/** @type {number} Maximum items to filter synchronously before yielding */
+const MAX_SYNC_FILTER_ITEMS = 500;
+
+/** @type {number} Maximum cache size for filter results */
+const MAX_CACHE_SIZE = 10;
 
 // ============================================
 // State
@@ -33,6 +39,57 @@ let boundInputHandler = null;
 
 /** @type {Function|null} Callback for search changes */
 let onSearchChange = null;
+
+// ============================================
+// Memoization Cache
+// ============================================
+
+/** @type {Map<string, Array<Object>>} Cache for filter results */
+const filterCache = new Map();
+
+/** @type {string} Cache key for current filter state */
+let lastFilterKey = '';
+
+/** @type {Array<Object>} Last filtered result */
+let lastFilteredResult = null;
+
+/**
+ * Generate cache key for filter operation
+ * @param {string} query - Search query
+ * @param {number} itemCount - Number of items
+ * @param {string} itemHash - Hash of item IDs (simplified)
+ * @returns {string} Cache key
+ */
+const getCacheKey = (query, itemCount, itemHash) => `${query}|${itemCount}|${itemHash}`;
+
+/**
+ * Get cached filter result
+ * @param {string} key - Cache key
+ * @returns {Array<Object>|undefined} Cached result
+ */
+const getCachedResult = (key) => filterCache.get(key);
+
+/**
+ * Set cached filter result with LRU eviction
+ * @param {string} key - Cache key
+ * @param {Array<Object>} result - Result to cache
+ */
+const setCachedResult = (key, result) => {
+    if (filterCache.size >= MAX_CACHE_SIZE) {
+        const firstKey = filterCache.keys().next().value;
+        filterCache.delete(firstKey);
+    }
+    filterCache.set(key, result);
+};
+
+/**
+ * Clear filter cache
+ */
+export const clearFilterCache = () => {
+    filterCache.clear();
+    lastFilterKey = '';
+    lastFilteredResult = null;
+};
 
 // ============================================
 // Core Functions
@@ -178,41 +235,124 @@ export const setQuery = (query, callbacks) => {
 // ============================================
 
 /**
- * Check if an item matches the search query
+ * Pre-computed searchable text for an item
+ * Caches the lowercase concatenated string of all searchable fields
  * @param {Object} item - Beatmap item
- * @param {string} query - Search query
+ * @returns {string} Pre-computed searchable text
+ */
+const getItemSearchableText = (() => {
+    const cache = new WeakMap();
+    return (item) => {
+        if (cache.has(item)) {
+            return cache.get(item);
+        }
+        const text = [
+            item.title,
+            item.titleUnicode,
+            item.artist,
+            item.artistUnicode,
+            item.creator,
+            item.difficultyName,
+            item.version,
+            item.source,
+            item.tags,
+            item.beatmapSetID
+        ].filter(Boolean).join(' ').toLowerCase();
+        cache.set(item, text);
+        return text;
+    };
+})();
+
+/**
+ * Check if an item matches the search query
+ * Optimized version using pre-computed searchable text
+ * @param {Object} item - Beatmap item
+ * @param {string} query - Search query (already lowercased)
  * @returns {boolean} Whether item matches
  */
 export const itemMatchesSearch = (item, query) => {
     if (!query) return true;
-
     const lowerQuery = query.toLowerCase();
-
-    // Search in various fields
-    const searchableFields = [
-        item.title,
-        item.artist,
-        item.creator,
-        item.difficultyName,
-        item.source,
-        item.tags
-    ];
-
-    return searchableFields.some(field => {
-        if (!field) return false;
-        return String(field).toLowerCase().includes(lowerQuery);
-    });
+    const searchableText = getItemSearchableText(item);
+    return searchableText.includes(lowerQuery);
 };
 
 /**
- * Filter an array of items based on search query
+ * Filter an array of items based on search query with memoization
  * @param {Array<Object>} items - Array of items
  * @param {string} [query] - Search query (defaults to current)
  * @returns {Array<Object>} Filtered items
  */
 export const filterItemsBySearch = (items, query = currentQuery) => {
     if (!query) return items;
-    return items.filter(item => itemMatchesSearch(item, query));
+
+    // Create a simple hash of item IDs for cache invalidation
+    // Only hash first/last few items for performance
+    const sampleSize = Math.min(items.length, 50);
+    let itemHash = '';
+    if (items.length > 0) {
+        const samples = [];
+        for (let i = 0; i < sampleSize; i++) {
+            const idx = Math.floor((i / sampleSize) * items.length);
+            samples.push(items[idx]?.id || '');
+        }
+        itemHash = samples.join(',');
+    }
+
+    const cacheKey = getCacheKey(query, items.length, itemHash);
+
+    // Check cache
+    const cached = getCachedResult(cacheKey);
+    if (cached) {
+        return cached;
+    }
+
+    // Perform filter
+    const lowerQuery = query.toLowerCase();
+    const result = items.filter(item => {
+        const searchableText = getItemSearchableText(item);
+        return searchableText.includes(lowerQuery);
+    });
+
+    // Cache result
+    setCachedResult(cacheKey, result);
+
+    return result;
+};
+
+/**
+ * Filter items with chunked processing for large datasets
+ * Returns a Promise that resolves with filtered results
+ * @param {Array<Object>} items - Array of items
+ * @param {string} query - Search query
+ * @returns {Promise<Array<Object>>} Filtered items
+ */
+export const filterItemsBySearchAsync = async (items, query = currentQuery) => {
+    if (!query) return items;
+    if (items.length <= MAX_SYNC_FILTER_ITEMS) {
+        return filterItemsBySearch(items, query);
+    }
+
+    // For large datasets, use chunked processing to avoid blocking
+    const lowerQuery = query.toLowerCase();
+    const result = [];
+    const chunkSize = MAX_SYNC_FILTER_ITEMS;
+
+    for (let i = 0; i < items.length; i += chunkSize) {
+        const chunk = items.slice(i, i + chunkSize);
+        const filteredChunk = chunk.filter(item => {
+            const searchableText = getItemSearchableText(item);
+            return searchableText.includes(lowerQuery);
+        });
+        result.push(...filteredChunk);
+
+        // Yield to main thread after each chunk
+        if (i + chunkSize < items.length) {
+            await new Promise(resolve => requestAnimationFrame(resolve));
+        }
+    }
+
+    return result;
 };
 
 // ============================================

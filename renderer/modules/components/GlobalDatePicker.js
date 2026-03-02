@@ -8,6 +8,7 @@ const GlobalDatePicker = {
     currentValue: null,
     onChange: null,
     _justClosedViaTrigger: false,
+    _scrollContainer: null,
 
     /**
      * Format date as dd/mm/yyyy
@@ -85,8 +86,12 @@ const GlobalDatePicker = {
         this.popover.classList.add('is-open');
         this.trigger.classList.add('is-active');
 
+        this._scrollContainer = document.querySelector('.main-container');
+
         window.addEventListener('resize', this._updatePosBound);
-        window.addEventListener('scroll', this._updatePosBound, true);
+        if (this._scrollContainer) {
+            this._scrollContainer.addEventListener('scroll', this._updatePosBound, { passive: true });
+        }
     },
 
     close() {
@@ -95,7 +100,10 @@ const GlobalDatePicker = {
         if (this.trigger) this.trigger.classList.remove('is-active');
 
         window.removeEventListener('resize', this._updatePosBound);
-        window.removeEventListener('scroll', this._updatePosBound, true);
+        if (this._scrollContainer) {
+            this._scrollContainer.removeEventListener('scroll', this._updatePosBound);
+            this._scrollContainer = null;
+        }
     },
 
     _updatePosBound: () => GlobalDatePicker.updatePosition(),

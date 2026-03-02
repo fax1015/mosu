@@ -20,9 +20,7 @@ import { showNotification } from '../components/NotificationSystem.js';
 import { getDirectoryPath, computeProgress } from '../utils/Helpers.js';
 import { isStarRatingMissing, isValidStarRating } from '../utils/Validation.js';
 import {
-    parseHitObjects,
-    parseBreakPeriods,
-    parseBookmarks,
+    parseAllSections,
     buildHighlightRanges,
     buildBreakRanges,
     buildBookmarkRanges
@@ -260,23 +258,23 @@ export const processAudioQueue = async (callbacks = {}) => {
 
     let unsavedCount = 0;
     let totalProcessed = 0;
-    const pendingUIUpdates = new Set();
+    const pendingUIUpdates = new Map();
     let uiUpdateRaf = null;
 
     // Batch UI updates into a single animation frame
     const flushUIUpdates = () => {
         if (pendingUIUpdates.size === 0) return;
-        const ids = [...pendingUIUpdates];
+        const updates = [...pendingUIUpdates.entries()];
         pendingUIUpdates.clear();
-        for (const id of ids) {
+        for (const [id, item] of updates) {
             if (callbacks.updateListItemElement) {
-                callbacks.updateListItemElement(id);
+                callbacks.updateListItemElement(id, item);
             }
         }
     };
 
-    const scheduleUIUpdate = (itemId) => {
-        pendingUIUpdates.add(itemId);
+    const scheduleUIUpdate = (item) => {
+        pendingUIUpdates.set(item.id, item);
         if (!uiUpdateRaf) {
             uiUpdateRaf = requestAnimationFrame(() => {
                 uiUpdateRaf = null;
@@ -295,9 +293,12 @@ export const processAudioQueue = async (callbacks = {}) => {
         }, SAVE_DEBOUNCE_MS);
     };
 
+    // Build a Map for O(1) item lookups - fixes O(n) per item issue
+    const itemMap = new Map(beatmapItems.map(i => [i.id, i]));
+
     // Analyze a single item — returns true if duration was found
     const analyzeOne = async (itemId) => {
-        const item = beatmapItems.find(i => i.id === itemId);
+        const item = itemMap.get(itemId);
         if (!item || typeof item.durationMs === 'number' || !item.audio || !item.filePath) {
             return false;
         }
@@ -309,6 +310,7 @@ export const processAudioQueue = async (callbacks = {}) => {
 
             if (duration) {
                 item.durationMs = duration;
+                item.progressPending = false;
 
                 // Recalculate accurately now that we have the real duration.
                 // If raw timestamps are missing (e.g. item restored from cache without duration),
@@ -317,9 +319,7 @@ export const processAudioQueue = async (callbacks = {}) => {
                     try {
                         const content = await beatmapApi.readOsuFile(item.filePath);
                         if (content) {
-                            const { hitStarts, hitEnds } = parseHitObjects(content);
-                            const breakPeriods = parseBreakPeriods(content);
-                            const bookmarks = parseBookmarks(content);
+                            const { hitStarts, hitEnds, breakPeriods, bookmarks } = parseAllSections(content);
                             item.rawTimestamps = { hitStarts, hitEnds, breakPeriods, bookmarks };
                         }
                     } catch (err) {
@@ -340,7 +340,7 @@ export const processAudioQueue = async (callbacks = {}) => {
                     delete item.rawTimestamps;
                 }
 
-                scheduleUIUpdate(item.id);
+                scheduleUIUpdate(item);
 
                 if (callbacks.onItemComplete) {
                     callbacks.onItemComplete(item);
@@ -435,22 +435,22 @@ export const processStarRatingQueue = async (callbacks = {}) => {
 
     let unsavedCount = 0;
     let totalProcessed = 0;
-    const pendingUIUpdates = new Set();
+    const pendingUIUpdates = new Map();
     let uiUpdateRaf = null;
 
     const flushUIUpdates = () => {
         if (pendingUIUpdates.size === 0) return;
-        const ids = [...pendingUIUpdates];
+        const updates = [...pendingUIUpdates.entries()];
         pendingUIUpdates.clear();
-        for (const id of ids) {
+        for (const [id, item] of updates) {
             if (callbacks.updateListItemElement) {
-                callbacks.updateListItemElement(id);
+                callbacks.updateListItemElement(id, item);
             }
         }
     };
 
-    const scheduleUIUpdate = (itemId) => {
-        pendingUIUpdates.add(itemId);
+    const scheduleUIUpdate = (item) => {
+        pendingUIUpdates.set(item.id, item);
         if (!uiUpdateRaf) {
             uiUpdateRaf = requestAnimationFrame(() => {
                 uiUpdateRaf = null;
@@ -478,7 +478,7 @@ export const processStarRatingQueue = async (callbacks = {}) => {
             const rating = await getStarRatingValue(item.filePath);
             if (isValidStarRating(rating)) {
                 item.starRating = rating;
-                scheduleUIUpdate(item.id);
+                scheduleUIUpdate(item);
 
                 if (callbacks.onItemComplete) {
                     callbacks.onItemComplete(item);

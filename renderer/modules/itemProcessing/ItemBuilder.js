@@ -7,7 +7,7 @@
 import { beatmapApi } from '../bridge/Tauri.js';
 import { settings } from '../state/Store.js';
 import { isValidStarRating, isStarRatingMissing } from '../utils/Validation.js';
-import { getDirectoryPath, computeProgress, createItemId } from '../utils/Helpers.js';
+import { getDirectoryPath, computeProgress, createItemId, isProgressPending } from '../utils/Helpers.js';
 import {
     parseMetadata,
     parseHitObjects,
@@ -102,6 +102,7 @@ export function processWorkerResult(file, existing) {
     let durationMs = (existing && existing.audio === metadata.audio)
         ? existing.durationMs
         : null;
+    const progressPending = Boolean(metadata.audio) && typeof durationMs !== 'number';
 
     const totalDuration = durationMs || fallbackDuration;
     if (totalDuration) {
@@ -114,13 +115,14 @@ export function processWorkerResult(file, existing) {
     const item = {
         ...metadata,
         durationMs,
+        progressPending,
         deadline: existing?.deadline ?? null,
         targetStarRating: existing?.targetStarRating ?? null,
         notes: existing?.notes || '',
         coverUrl,
         coverPath,
         highlights,
-        progress: computeProgress(highlights),
+        progress: computeProgress(highlights, settings),
         dateAdded: existing?.dateAdded ?? Date.now(),
         dateModified: stat?.mtimeMs ?? 0,
         id: existing?.id ?? createItemId(filePath),
@@ -173,7 +175,7 @@ export function buildItemFromCache(cached, settingsObj = settings) {
     }
 
     // Recalculate progress from highlights
-    const progress = computeProgress(highlights);
+    const progress = computeProgress(highlights, settingsObj);
 
     // Build item with defaults for missing fields
     const item = {
@@ -190,6 +192,7 @@ export function buildItemFromCache(cached, settingsObj = settings) {
         audio: cached.audio || '',
         background: cached.background || '',
         durationMs: (typeof cached.durationMs === 'number') ? cached.durationMs : null,
+        progressPending: Boolean(cached.progressPending) || (Boolean(cached.audio) && typeof cached.durationMs !== 'number'),
         previewTime: cached.previewTime ?? -1,
         deadline: (typeof cached.deadline === 'number' || cached.deadline === null)
             ? cached.deadline
@@ -274,6 +277,7 @@ export async function calculateItemDuration(item, callbacks = {}) {
 
         if (duration) {
             item.durationMs = duration;
+            item.progressPending = false;
 
             // Recalculate highlights if we have raw timestamps
             if (!item.rawTimestamps && item.filePath && beatmapApi?.readOsuFile) {
@@ -297,14 +301,14 @@ export async function calculateItemDuration(item, callbacks = {}) {
                 const bookmarkRanges = buildBookmarkRanges(bookmarks || [], duration);
 
                 item.highlights = [...breakRanges, ...objectRanges, ...bookmarkRanges];
-                item.progress = computeProgress(item.highlights);
+                item.progress = computeProgress(item.highlights, settings);
 
                 // Clean up temporary data
                 delete item.rawTimestamps;
             }
 
             if (onDurationUpdated) {
-                onDurationUpdated(item.id, duration);
+                onDurationUpdated(item.id, duration, item);
             }
 
             return true;
@@ -386,6 +390,12 @@ export function mergeItemData(existing, incoming) {
             : (isValidStarRating(incoming.starRating) ? incoming.starRating : null),
         // Keep existing duration if available
         durationMs: existing.durationMs ?? incoming.durationMs ?? null,
+        progressPending: isProgressPending({
+            ...incoming,
+            audio: incoming.audio ?? existing.audio,
+            durationMs: existing.durationMs ?? incoming.durationMs ?? null,
+            progressPending: incoming.progressPending ?? existing.progressPending
+        }),
     };
 }
 

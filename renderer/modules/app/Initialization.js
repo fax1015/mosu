@@ -11,13 +11,14 @@
 // ============================================
 
 import { SETTINGS_STORAGE_KEY } from '../config/Constants.js';
-import { generateUserId, generateApiKey } from '../utils/Helpers.js';
+import { generateUserId, generateApiKey, computeProgress } from '../utils/Helpers.js';
 import { showNotification } from '../components/NotificationSystem.js';
 import { closeDialogWithAnimation } from '../ui/DialogManager.js';
 import { createDropdownMenu } from '../ui/DropdownMenu.js';
 import { updateSortUI, updateSRRangeUI, setupSRRangeResizeObserver, updateVersionLabels } from '../ui/SettingsUI.js';
-import { renderFromState, updateTabCounts, updateListItemElement, setLoading, updateProgress, updateEmptyState } from '../ui/StateRenderer.js';
+import { renderFromState, updateTabCounts, updateListItemElement, setLoading, updateProgress, updateEmptyState, clearFilterCache } from '../ui/StateRenderer.js';
 import { initEventDelegation } from '../interaction/EventDelegation.js';
+import { initSearch } from '../interaction/SearchHandler.js';
 import { AudioController } from '../services/AudioController.js';
 import { initMapPreview, openMapPreview } from '../services/MapPreview.js';
 import { initScanEventListeners, startStreamingScan } from '../services/ScanManager.js';
@@ -47,6 +48,15 @@ let timelineRefreshTimer = null;
 
 /** @type {number|null} Rescan mapper name input timer */
 let rescanMapperTimer = null;
+
+/** @type {HTMLElement|null} Scroll container element */
+let scrollContainer = null;
+
+/**
+ * Get the scrollable main container element
+ * @returns {HTMLElement|null}
+ */
+const getScrollContainer = () => document.querySelector('.main-container');
 
 /** @type {Object|null} Sort dropdown controller */
 let sortDropdownMenu = null;
@@ -330,12 +340,11 @@ export const initToolbar = (callbacks = {}) => {
     const settingsDialog = document.querySelector('#settingsDialog');
     const listContainer = document.querySelector('#listContainer');
 
-    // Search
+    // Search - use debounced handler from SearchHandler for better performance
     if (searchInput) {
-        searchInput.addEventListener('input', (event) => {
-            Store.updateState('searchQuery', event.target.value.trim());
-            renderFromState();
-        });
+        // Remove the direct input listener to avoid duplicate renders
+        // The SearchHandler will be initialized separately with proper debouncing
+        // This is handled by initSearch in Main.js
     }
 
     // Header menu toggle
@@ -743,8 +752,7 @@ export const initSettingsPanel = (callbacks = {}) => {
                 } else if (id === 'ignoreStartAndBreaks') {
                     Store.setBeatmapItems(Store.beatmapItems.map(item => ({
                         ...item,
-                        progress: item.highlights ?
-                            item.highlights.reduce((sum, h) => sum + (h.end - h.start), 0) : 0
+                        progress: computeProgress(item.highlights || [], Store.settings)
                     })));
                     renderFromState();
                 } else if (id === 'ignoreGuestDifficulties') {
@@ -1189,20 +1197,25 @@ const initDragAndDrop = () => {
 
     const startAutoScroll = () => {
         if (Store.autoScrollTimer) return;
+        scrollContainer = getScrollContainer();
+        if (!scrollContainer) return;
+
         Store.updateState('autoScrollTimer', setInterval(() => {
             const threshold = 120;
             const maxSpeed = 20;
-            const h = window.innerHeight;
+            const rect = scrollContainer.getBoundingClientRect();
+            const containerTop = rect.top;
+            const containerBottom = rect.bottom;
 
             let speed = 0;
-            if (Store.currentMouseY < threshold) {
-                speed = -Math.max(2, (1 - (Store.currentMouseY / threshold)) * maxSpeed);
-            } else if (Store.currentMouseY > h - threshold) {
-                speed = Math.max(2, (1 - ((h - Store.currentMouseY) / threshold)) * maxSpeed);
+            if (Store.currentMouseY < containerTop + threshold) {
+                speed = -Math.max(2, (1 - ((Store.currentMouseY - containerTop) / threshold)) * maxSpeed);
+            } else if (Store.currentMouseY > containerBottom - threshold) {
+                speed = Math.max(2, (1 - ((containerBottom - Store.currentMouseY) / threshold)) * maxSpeed);
             }
 
             if (speed !== 0) {
-                window.scrollBy(0, speed);
+                scrollContainer.scrollBy(0, speed);
             }
         }, 16));
     };
@@ -1355,13 +1368,19 @@ const initDragAndDrop = () => {
  * @param {Function} callbacks.scheduleTimelineBatchRender - Schedule timeline batch render
  */
 const initVirtualScroll = (callbacks = {}) => {
+    scrollContainer = getScrollContainer();
+    if (!scrollContainer) return;
+
     const debouncedSync = () => {
         if (Store.isWindowResizeInProgress) return;
         if (scrollRAF) return;
         scrollRAF = requestAnimationFrame(() => {
             scrollRAF = null;
             if (Store.isWindowResizeInProgress) return;
-            if (callbacks.syncVirtualList) callbacks.syncVirtualList();
+
+            if (callbacks.syncVirtualList) {
+                callbacks.syncVirtualList();
+            }
         });
     };
 
@@ -1387,7 +1406,7 @@ const initVirtualScroll = (callbacks = {}) => {
         }, 90);
     };
 
-    window.addEventListener('scroll', debouncedSync, { passive: true });
+    scrollContainer.addEventListener('scroll', debouncedSync, { passive: true });
     window.addEventListener('resize', () => {
         Store.updateState('isWindowResizeInProgress', true);
         document.body?.classList.add('window-resizing');
@@ -1574,16 +1593,21 @@ export const init = async (callbacks = {}) => {
     // Initialize star rating range UI
     const srMin = document.getElementById('srMin');
     const srMax = document.getElementById('srMax');
-    if (srMin) srMin.addEventListener('input', (e) => updateSRRangeUI(Store.srFilter, e, {
-        rerenderList: true,
-        onFilterChange: (filter) => Store.updateState('srFilter', filter),
-        renderFromState: renderFromState
-    }));
-    if (srMax) srMax.addEventListener('input', (e) => updateSRRangeUI(Store.srFilter, e, {
-        rerenderList: true,
-        onFilterChange: (filter) => Store.updateState('srFilter', filter),
-        renderFromState: renderFromState
-    }));
+
+    if (srMin) {
+        // Update visuals and re-render list on every input (with debouncing)
+        srMin.addEventListener('input', (e) => updateSRRangeUI(Store.srFilter, e, {
+            onFilterChange: (filter) => Store.updateState('srFilter', filter),
+            renderFromState: renderFromState
+        }));
+    }
+    if (srMax) {
+        // Update visuals and re-render list on every input (with debouncing)
+        srMax.addEventListener('input', (e) => updateSRRangeUI(Store.srFilter, e, {
+            onFilterChange: (filter) => Store.updateState('srFilter', filter),
+            renderFromState: renderFromState
+        }));
+    }
     updateSRRangeUI(Store.srFilter, null, { rerenderList: false });
 
     // Setup resize observer for SR range slider to fix offset issues
@@ -1605,6 +1629,18 @@ export const init = async (callbacks = {}) => {
 
     // Initialize virtual scroll
     initVirtualScroll(callbacks);
+
+    // Initialize search with debouncing
+    initSearch({
+        onSearch: (query) => {
+            Store.updateState('searchQuery', query);
+            // Clear filter cache when search changes
+            clearFilterCache();
+        },
+        renderFromState: () => {
+            renderFromState();
+        }
+    });
 
     // Initial render
     renderFromState();

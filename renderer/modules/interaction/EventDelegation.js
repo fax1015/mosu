@@ -189,6 +189,15 @@ let boundResizeHandler = null;
 /** @type {Function|null} Bound scroll handler */
 let boundScrollHandler = null;
 
+/** @type {HTMLElement|null} Scroll container element */
+let scrollContainer = null;
+
+/**
+ * Get the scrollable main container element
+ * @returns {HTMLElement|null}
+ */
+const getScrollContainer = () => document.querySelector('.main-container');
+
 /**
  * Bind window-level events
  * @param {Object} callbacks - Callback functions
@@ -203,7 +212,10 @@ export const bindGlobalEvents = (callbacks) => {
 
     if (callbacks.onScroll) {
         boundScrollHandler = callbacks.onScroll;
-        window.addEventListener('scroll', boundScrollHandler, { passive: true });
+        scrollContainer = getScrollContainer();
+        if (scrollContainer) {
+            scrollContainer.addEventListener('scroll', boundScrollHandler, { passive: true });
+        }
     }
 };
 
@@ -217,8 +229,11 @@ export const unbindGlobalEvents = () => {
     }
 
     if (boundScrollHandler) {
-        window.removeEventListener('scroll', boundScrollHandler);
+        if (scrollContainer) {
+            scrollContainer.removeEventListener('scroll', boundScrollHandler);
+        }
         boundScrollHandler = null;
+        scrollContainer = null;
     }
 };
 
@@ -254,12 +269,12 @@ export const initEventDelegation = (callbacks = {}) => {
             setTodoIds: Store.setTodoIds,
             setDoneIds: Store.setDoneIds,
             viewMode: Store.viewMode,
-            updateTabCounts: () => {},
-            scheduleSave: () => {},
-            removeItemFromView: () => {},
-            updateListItemElement: () => {},
-            insertItemIntoTodoView: () => {},
-            renderFromState: () => {}
+            updateTabCounts: () => { },
+            scheduleSave: () => { },
+            removeItemFromView: () => { },
+            updateListItemElement: () => { },
+            insertItemIntoTodoView: () => { },
+            renderFromState: () => { }
         }),
         toggleDone: (itemId) => toggleDone(itemId, {
             todoIds: Store.todoIds,
@@ -267,13 +282,13 @@ export const initEventDelegation = (callbacks = {}) => {
             setTodoIds: Store.setTodoIds,
             setDoneIds: Store.setDoneIds,
             viewMode: Store.viewMode,
-            updateTabCounts: () => {},
-            scheduleSave: () => {},
-            removeItemFromView: () => {},
-            updateListItemElement: () => {},
-            insertItemIntoTodoView: () => {},
-            insertItemIntoCompletedView: () => {},
-            renderFromState: () => {}
+            updateTabCounts: () => { },
+            scheduleSave: () => { },
+            removeItemFromView: () => { },
+            updateListItemElement: () => { },
+            insertItemIntoTodoView: () => { },
+            insertItemIntoCompletedView: () => { },
+            renderFromState: () => { }
         }),
         playAudio: (itemId) => AudioController.play(itemId),
         stopAudio: () => AudioController.stop(),

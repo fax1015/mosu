@@ -58,6 +58,12 @@ let autoScrollTimer = null;
 /** @type {number} Current mouse Y position */
 let currentMouseY = 0;
 
+/**
+ * Get the scrollable main container element
+ * @returns {HTMLElement|null}
+ */
+const getScrollContainer = () => document.querySelector('.main-container');
+
 /** @type {boolean} Whether drag and drop is initialized */
 let isInitialized = false;
 
@@ -159,25 +165,31 @@ export const startAutoScroll = () => {
     if (autoScrollTimer) return;
 
     autoScrollTimer = setInterval(() => {
-        const h = window.innerHeight;
+        const scrollContainer = getScrollContainer();
+        if (!scrollContainer) return;
+
+        const rect = scrollContainer.getBoundingClientRect();
+        const containerTop = rect.top;
+        const containerBottom = rect.bottom;
         let speed = 0;
 
-        if (currentMouseY < AUTO_SCROLL_THRESHOLD) {
+        // Calculate mouse position relative to the scroll container
+        if (currentMouseY < containerTop + AUTO_SCROLL_THRESHOLD) {
             // Scroll up
             speed = -Math.max(
                 AUTO_SCROLL_MIN_SPEED,
-                (1 - (currentMouseY / AUTO_SCROLL_THRESHOLD)) * AUTO_SCROLL_MAX_SPEED
+                (1 - ((currentMouseY - containerTop) / AUTO_SCROLL_THRESHOLD)) * AUTO_SCROLL_MAX_SPEED
             );
-        } else if (currentMouseY > h - AUTO_SCROLL_THRESHOLD) {
+        } else if (currentMouseY > containerBottom - AUTO_SCROLL_THRESHOLD) {
             // Scroll down
             speed = Math.max(
                 AUTO_SCROLL_MIN_SPEED,
-                (1 - ((h - currentMouseY) / AUTO_SCROLL_THRESHOLD)) * AUTO_SCROLL_MAX_SPEED
+                (1 - ((containerBottom - currentMouseY) / AUTO_SCROLL_THRESHOLD)) * AUTO_SCROLL_MAX_SPEED
             );
         }
 
         if (speed !== 0) {
-            window.scrollBy(0, speed);
+            scrollContainer.scrollBy(0, speed);
         }
     }, 16);
 };

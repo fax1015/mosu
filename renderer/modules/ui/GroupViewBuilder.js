@@ -252,8 +252,18 @@ export const buildGroupHeaderRow = (group, groupIndex, callbacks) => {
             isAnimating = false;
             if (animSafetyTimer) { clearTimeout(animSafetyTimer); animSafetyTimer = null; }
         };
-        childrenContainer.addEventListener('transitionend', release, { once: true });
-        animSafetyTimer = setTimeout(release, 600); // fallback if transitionend doesn't fire
+
+        const onTransitionEnd = (e) => {
+            // Only handle the grid transition (not opacity/transform on children)
+            if (e.propertyName === 'grid-template-rows') {
+                release();
+            }
+        };
+
+        childrenContainer.addEventListener('transitionend', onTransitionEnd, { once: true });
+        animSafetyTimer = setTimeout(() => {
+            release();
+        }, 600); // fallback if transitionend doesn't fire
 
         if (wasExpanded) {
             groupedExpandedKeys.delete(key);
@@ -326,7 +336,8 @@ export const buildGroupHeaderRow = (group, groupIndex, callbacks) => {
 };
 
 /**
- * Renders the grouped layout (non-virtual, flow layout).
+ * Renders the grouped layout with chunked rendering for large datasets.
+ * Uses incremental DOM insertion to maintain responsiveness with 2000+ items.
  * @param {HTMLElement} listContainer - List container element
  * @param {Array<Object>} groups - Array of groups
  * @param {Object} callbacks - Callback functions
@@ -334,62 +345,78 @@ export const buildGroupHeaderRow = (group, groupIndex, callbacks) => {
  */
 export const renderGroupedView = (listContainer, groups, callbacks) => {
     const passToken = ++groupedRenderPassToken;
-    const BATCH_SIZE = 12;
 
     // Import cancelTimelineBatchRender from TimelineRenderer
     import('../services/TimelineRenderer.js').then(({ cancelTimelineBatchRender }) => {
         cancelTimelineBatchRender();
     });
 
-    // Prevent layout thrash: lock the container height during the batch clear/rebuild.
-    // This stops the scrollbar from jumping to the top or disappearing.
-    const currentHeight = listContainer.scrollHeight;
-    if (currentHeight > 0) {
-        listContainer.style.minHeight = `${currentHeight}px`;
-    }
-
-    listContainer.style.height = ''; // Let content determine height for grouped mode
+    // Clear and prepare container
     listContainer.innerHTML = '';
+    listContainer.classList.add('view-grouped');
 
     if (!groups.length) {
-        listContainer.style.minHeight = '';
         if (callbacks.updateEmptyState) {
             callbacks.updateEmptyState(listContainer);
         }
         return;
     }
 
-    let cursor = 0;
-    const processBatch = () => {
-        // Stop stale jobs (e.g. user switched tabs while batches were pending).
-        if (passToken !== groupedRenderPassToken) return;
-        if (!listContainer.isConnected || !listContainer.classList.contains('view-grouped')) return;
-
+    // For small datasets, render synchronously for instant feedback
+    if (groups.length <= 20) {
         const fragment = document.createDocumentFragment();
-        const end = Math.min(cursor + BATCH_SIZE, groups.length);
-        for (let i = cursor; i < end; i++) {
-            fragment.appendChild(buildGroupHeaderRow(groups[i], i, callbacks));
-        }
+        groups.forEach((group, index) => {
+            const groupEl = buildGroupHeaderRow(group, index, callbacks);
+            groupEl.dataset.groupKey = group.key;
+            groupEl.dataset.groupIndex = index;
+            fragment.appendChild(groupEl);
+        });
         listContainer.appendChild(fragment);
-        cursor = end;
-
-        // Release the height lock once we've rendered enough to cover the previous height
-        // or we've finished the whole list.
-        if (listContainer.scrollHeight >= currentHeight || cursor >= groups.length) {
-            listContainer.style.minHeight = '';
-        }
-
-        if (cursor < groups.length) {
-            requestAnimationFrame(processBatch);
-            return;
-        }
 
         if (callbacks.updateEmptyState) {
             callbacks.updateEmptyState(listContainer);
         }
+        return;
+    }
+
+    // For large datasets, use chunked rendering to maintain responsiveness
+    // This prevents INP issues when switching to tabs with 2000+ items
+    const CHUNK_SIZE = 15; // Groups per frame
+    let currentIndex = 0;
+
+    const renderChunk = () => {
+        // Check if this render pass is still valid (token hasn't changed)
+        if (passToken !== groupedRenderPassToken) {
+            return;
+        }
+
+        const fragment = document.createDocumentFragment();
+        const endIndex = Math.min(currentIndex + CHUNK_SIZE, groups.length);
+
+        for (let i = currentIndex; i < endIndex; i++) {
+            const group = groups[i];
+            const groupEl = buildGroupHeaderRow(group, i, callbacks);
+            groupEl.dataset.groupKey = group.key;
+            groupEl.dataset.groupIndex = i;
+            fragment.appendChild(groupEl);
+        }
+
+        listContainer.appendChild(fragment);
+        currentIndex = endIndex;
+
+        if (currentIndex < groups.length) {
+            // Schedule next chunk
+            requestAnimationFrame(renderChunk);
+        } else {
+            // Rendering complete
+            if (callbacks.updateEmptyState) {
+                callbacks.updateEmptyState(listContainer);
+            }
+        }
     };
 
-    requestAnimationFrame(processBatch);
+    // Start chunked rendering
+    requestAnimationFrame(renderChunk);
 };
 
 // ============================================

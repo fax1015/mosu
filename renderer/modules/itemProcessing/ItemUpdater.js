@@ -4,7 +4,7 @@
  * Handles updating individual item properties
  */
 
-import { beatmapItems, setBeatmapItems } from '../state/Store.js';
+import { beatmapItems, setBeatmapItems, settings } from '../state/Store.js';
 import { scheduleSave } from '../state/Persistence.js';
 import { isValidStarRating } from '../utils/Validation.js';
 import { computeProgress } from '../utils/Helpers.js';
@@ -212,7 +212,7 @@ export function updateItemHighlights(itemId, highlights, callbacks = {}) {
 
         // Update the item
         beatmapItems[itemIndex].highlights = validHighlights;
-        beatmapItems[itemIndex].progress = computeProgress(validHighlights);
+        beatmapItems[itemIndex].progress = computeProgress(validHighlights, settings);
 
         // Schedule save
         scheduleSave();
@@ -263,6 +263,7 @@ export function updateItemDuration(itemId, duration, callbacks = {}, recalculate
 
         // Update duration
         item.durationMs = duration;
+        item.progressPending = false;
 
         // Recalculate highlights if needed
         if (recalculateHighlights && item.rawTimestamps) {
@@ -272,7 +273,7 @@ export function updateItemDuration(itemId, duration, callbacks = {}, recalculate
             const bookmarkRanges = buildBookmarkRanges(bookmarks || [], duration);
 
             item.highlights = [...breakRanges, ...objectRanges, ...bookmarkRanges];
-            item.progress = computeProgress(item.highlights);
+            item.progress = computeProgress(item.highlights, settings);
 
             // Clean up temporary data
             delete item.rawTimestamps;
@@ -435,9 +436,9 @@ export function getDeadlineStatus(deadline, now = Date.now()) {
  */
 export function itemNeedsAudioAnalysis(item) {
     return item &&
-           item.audio &&
-           typeof item.durationMs !== 'number' &&
-           !!item.id;
+        item.audio &&
+        typeof item.durationMs !== 'number' &&
+        !!item.id;
 }
 
 /**
@@ -447,7 +448,7 @@ export function itemNeedsAudioAnalysis(item) {
  */
 export function itemNeedsStarRating(item) {
     return item &&
-           item.filePath &&
-           item.id &&
-           !isValidStarRating(item.starRating);
+        item.filePath &&
+        item.id &&
+        !isValidStarRating(item.starRating);
 }

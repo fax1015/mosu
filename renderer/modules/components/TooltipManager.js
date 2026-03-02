@@ -48,7 +48,11 @@ const TooltipManager = {
 
         // Hide on click or scroll
         document.addEventListener('mousedown', () => this.hide());
-        window.addEventListener('scroll', () => this.hide(), true);
+        // Use capturing phase to catch scroll events from main-container
+        const scrollContainer = document.querySelector('.main-container');
+        if (scrollContainer) {
+            scrollContainer.addEventListener('scroll', () => this.hide(), { passive: true });
+        }
         window.addEventListener('resize', () => this.hide());
     },
 

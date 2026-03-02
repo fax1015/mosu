@@ -81,12 +81,14 @@ export const parseMetadata = (content) => {
  * @returns {Object} Object with hitStarts and hitEnds arrays
  */
 export const parseHitObjects = (content) => {
+    const SLIDER_GAP_FILL_BEATS = 2;
     let inHitObjects = false;
     let sliderMultiplier = 1.0;
     const timingPoints = [];
     const hitStarts = [];
     const hitEnds = [];
     const hitTypes = [];
+    const hitGapThresholds = [];
 
     const lines = content.split(/\r?\n/);
 
@@ -139,13 +141,13 @@ export const parseHitObjects = (content) => {
 
             const time = parseInt(parts[2]);
             const type = parseInt(parts[3]);
+            const timing = getTiming(time);
             let endTime = time;
 
             if (type & 2) {
                 if (parts.length >= 8) {
                     const slides = parseInt(parts[6]) || 1;
                     const length = parseFloat(parts[7]) || 0;
-                    const timing = getTiming(time);
                     const duration = (length / (sliderMultiplier * 100 * timing.sv)) * timing.beatLength * slides;
                     endTime = time + Math.max(0, Math.floor(duration));
                 }
@@ -159,13 +161,18 @@ export const parseHitObjects = (content) => {
             if (hitEnds.length > 0) {
                 const prevType = hitTypes[hitTypes.length - 1];
                 if (prevType & 2) {
-                    hitEnds[hitEnds.length - 1] = Math.max(hitEnds[hitEnds.length - 1], time);
+                    const prevEnd = hitEnds[hitEnds.length - 1];
+                    const prevGapThreshold = hitGapThresholds[hitGapThresholds.length - 1] || 0;
+                    if ((time - prevEnd) <= prevGapThreshold) {
+                        hitEnds[hitEnds.length - 1] = Math.max(prevEnd, time);
+                    }
                 }
             }
 
             hitStarts.push(time);
             hitEnds.push(Math.max(time, endTime));
             hitTypes.push(type);
+            hitGapThresholds.push((type & 2) ? Math.max(0, Math.floor(timing.beatLength * SLIDER_GAP_FILL_BEATS)) : 0);
         }
     }
 
@@ -501,6 +508,133 @@ export const parseBookmarks = (content) => {
     }
 
     return [];
+};
+
+/**
+ * Parse all sections needed for timeline data in a single pass
+ * Combines parseHitObjects, parseBreakPeriods, and parseBookmarks
+ * @param {string} content - Raw .osu file content
+ * @returns {Object} Object with hitStarts, hitEnds, breakPeriods, and bookmarks
+ */
+export const parseAllSections = (content) => {
+    const SLIDER_GAP_FILL_BEATS = 2;
+    let sliderMultiplier = 1.0;
+    const timingPoints = [];
+    const hitStarts = [];
+    const hitEnds = [];
+    const hitTypes = [];
+    const hitGapThresholds = [];
+    const breakPeriods = [];
+    let bookmarks = [];
+
+    const lines = content.split(/\r?\n/);
+
+    const getTiming = (time) => {
+        let activeBPM = 60000 / 120;
+        let activeSV = 1.0;
+        for (const tp of timingPoints) {
+            if (tp.time > time) break;
+            if (tp.uninherited) {
+                activeBPM = tp.beatLength;
+                activeSV = 1.0;
+            } else if (tp.beatLength < 0) {
+                activeSV = -100 / tp.beatLength;
+            }
+        }
+        return { beatLength: activeBPM, sv: activeSV };
+    };
+
+    let section = '';
+    for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith('//')) continue;
+
+        if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+            section = trimmed.slice(1, -1).toLowerCase();
+            continue;
+        }
+
+        if (section === 'difficulty') {
+            const sep = trimmed.indexOf(':');
+            if (sep !== -1) {
+                const key = trimmed.slice(0, sep).trim().toLowerCase();
+                if (key === 'slidermultiplier') {
+                    sliderMultiplier = parseFloat(trimmed.slice(sep + 1)) || 1.0;
+                }
+            }
+        } else if (section === 'timingpoints') {
+            const parts = trimmed.split(',');
+            if (parts.length >= 2) {
+                timingPoints.push({
+                    time: parseInt(parts[0]),
+                    beatLength: parseFloat(parts[1]),
+                    uninherited: parts.length > 6 ? parts[6] === '1' : true
+                });
+            }
+        } else if (section === 'events') {
+            const parts = trimmed.split(',').map((part) => part.trim());
+            if (parts.length >= 3) {
+                const typeToken = parts[0];
+                if (typeToken === '2' || typeToken.toLowerCase() === 'break') {
+                    const startTime = Number.parseInt(parts[1], 10);
+                    const endTime = Number.parseInt(parts[2], 10);
+                    if (Number.isFinite(startTime) && Number.isFinite(endTime) && endTime > startTime) {
+                        breakPeriods.push({ start: startTime, end: endTime });
+                    }
+                }
+            }
+        } else if (section === 'editor') {
+            if (trimmed.startsWith('Bookmarks:')) {
+                const raw = trimmed.slice('Bookmarks:'.length).trim();
+                if (raw) {
+                    bookmarks = raw
+                        .split(',')
+                        .map((val) => Number.parseInt(val.trim(), 10))
+                        .filter((val) => Number.isFinite(val));
+                }
+            }
+        } else if (section === 'hitobjects') {
+            const parts = trimmed.split(',');
+            if (parts.length < 4) continue;
+
+            const time = parseInt(parts[2]);
+            const type = parseInt(parts[3]);
+            const timing = getTiming(time);
+            let endTime = time;
+
+            if (type & 2) {
+                if (parts.length >= 8) {
+                    const slides = parseInt(parts[6]) || 1;
+                    const length = parseFloat(parts[7]) || 0;
+                    const duration = (length / (sliderMultiplier * 100 * timing.sv)) * timing.beatLength * slides;
+                    endTime = time + Math.max(0, Math.floor(duration));
+                }
+            } else if (type & 8) {
+                if (parts.length >= 6) endTime = parseInt(parts[5]) || time;
+            } else if (type & 128) {
+                if (parts.length >= 6) endTime = parseInt(parts[5].split(':')[0]) || time;
+            }
+
+            // Fill gap if previous was a slider
+            if (hitEnds.length > 0) {
+                const prevType = hitTypes[hitTypes.length - 1];
+                if (prevType & 2) {
+                    const prevEnd = hitEnds[hitEnds.length - 1];
+                    const prevGapThreshold = hitGapThresholds[hitGapThresholds.length - 1] || 0;
+                    if ((time - prevEnd) <= prevGapThreshold) {
+                        hitEnds[hitEnds.length - 1] = Math.max(prevEnd, time);
+                    }
+                }
+            }
+
+            hitStarts.push(time);
+            hitEnds.push(Math.max(time, endTime));
+            hitTypes.push(type);
+            hitGapThresholds.push((type & 2) ? Math.max(0, Math.floor(timing.beatLength * SLIDER_GAP_FILL_BEATS)) : 0);
+        }
+    }
+
+    return { hitStarts, hitEnds, breakPeriods, bookmarks };
 };
 
 /**

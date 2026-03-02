@@ -3,7 +3,7 @@
  * Extracted from renderer.js (lines 1322-1900)
  */
 
-import { getStarRatingColor, formatDuration, normalizeMetadata } from '../utils/Helpers.js';
+import { getStarRatingColor, formatDuration, normalizeMetadata, formatProgressLabel } from '../utils/Helpers.js';
 import { isValidStarRating } from '../utils/Validation.js';
 import { AudioController } from '../services/AudioController.js';
 import { scheduleCoverLoad } from '../services/CoverLoader.js';
@@ -44,11 +44,12 @@ export const buildListItem = (metadata, index, callbacks) => {
     listBox.style.setProperty('--i', index);
     // Expose progress so we can decide whether to render placeholder highlights
     listBox.dataset.progress = String(normalized.progress || 0);
+    listBox.dataset.progressPending = normalized.progressPending ? 'true' : 'false';
     listBox.dataset.renderIndex = String(index);
 
     if (normalized.highlights.length) {
         listBox.__highlights = normalized.highlights;
-    } else if (normalized.progress > 0) {
+    } else if (!normalized.progressPending && normalized.progress > 0) {
         // Only show placeholder highlights if the item has non-zero progress
         listBox.dataset.highlights = index % 2 === 0 ? '0.06-0.14,0.34-0.38,0.72-0.98' : '0.12-0.2,0.48-0.62';
     } else {
@@ -404,8 +405,7 @@ export const buildListItem = (metadata, index, callbacks) => {
     itemStats.classList.add('item-stats');
 
     // Calculate progress
-    const displayProgress = isDone ? 1 : normalized.progress;
-    const progress = Math.round((displayProgress || 0) * 100);
+    const progressLabel = formatProgressLabel(normalized, isDone);
 
     // ALL TAB: Only duration and progress, right-aligned
     if (isAllTab) {
@@ -416,7 +416,7 @@ export const buildListItem = (metadata, index, callbacks) => {
 
         const progressSpan = document.createElement('span');
         progressSpan.classList.add('progress-stat');
-        progressSpan.innerHTML = `<strong>Progress:</strong> ${progress}%`;
+        progressSpan.innerHTML = `<strong>Progress:</strong> ${progressLabel}`;
         itemStats.appendChild(progressSpan);
 
         infoHeader.appendChild(itemStats);
@@ -431,7 +431,7 @@ export const buildListItem = (metadata, index, callbacks) => {
 
         const progressSpan = document.createElement('span');
         progressSpan.classList.add('progress-stat');
-        progressSpan.innerHTML = `<strong>Progress:</strong> ${progress}%`;
+        progressSpan.innerHTML = `<strong>Progress:</strong> ${progressLabel}`;
         itemStats.appendChild(progressSpan);
 
         infoHeader.appendChild(itemStats);
@@ -451,7 +451,7 @@ export const buildListItem = (metadata, index, callbacks) => {
 
         const progressSpan = document.createElement('span');
         progressSpan.classList.add('progress-stat');
-        progressSpan.innerHTML = `<strong>Progress:</strong> ${progress}%`;
+        progressSpan.innerHTML = `<strong>Progress:</strong> ${progressLabel}`;
         itemStats.appendChild(progressSpan);
 
         if (expandIcon) {

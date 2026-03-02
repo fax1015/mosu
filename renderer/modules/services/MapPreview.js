@@ -12,9 +12,15 @@ import { renderTimeline } from './TimelineRenderer.js';
 const OSU_PLAYFIELD_WIDTH = 512;
 const OSU_PLAYFIELD_HEIGHT = 384;
 const STACK_OFFSET_OSU = 5.2;
-const DRAWN_CIRCLE_RADIUS_SCALE = 0.95;
-const CIRCLE_POST_HIT_FADE_MS = 30;
-const LONG_OBJECT_POST_HIT_FADE_MS = 70;
+const DRAWN_CIRCLE_RADIUS_SCALE = 0.93;
+const CIRCLE_POST_HIT_FADE_MS = 42;
+const LONG_OBJECT_POST_HIT_FADE_MS = 88;
+const FOLLOW_POINT_FADE_LEAD_MS = 120;
+const FOLLOW_POINT_FADE_OUT_MS = 120;
+const SLIDER_HEAD_HIT_FADE_MS = 120;
+const SLIDER_HEAD_HIT_SCALE_BOOST = 0.2;
+const COMBO_NUMBER_FONT_SCALE = 0.84;
+const OBJECT_VISUAL_MAX_ALPHA = 0.9;
 
 const DEFAULT_COMBO_COLOURS = [
     { r: 255, g: 102, b: 171 },
@@ -110,6 +116,28 @@ const drawReverseIndicator = (ctx, position, direction, size, alpha = 1) => {
     ctx.lineTo(tipX, tipY);
     ctx.lineTo(backX - (px * wing), backY - (py * wing));
     ctx.stroke();
+};
+
+const drawComboNumber = (ctx, text, x, y, radius, alpha = 1) => {
+    if (!text) {
+        return;
+    }
+
+    const digits = String(text).length;
+    const fontScale = (digits >= 3 ? 0.72 : (digits === 2 ? 0.86 : 1.05)) * COMBO_NUMBER_FONT_SCALE;
+    const fontSize = Math.max(8, radius * fontScale);
+    const textAlpha = clamp(alpha, 0, 1);
+    const strokeAlpha = clamp(alpha * 0.34, 0, 1);
+
+    ctx.font = `700 ${fontSize}px Torus, sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.lineJoin = 'round';
+    ctx.strokeStyle = `rgba(0, 0, 0, ${strokeAlpha})`;
+    ctx.lineWidth = Math.max(0.75, radius * 0.095);
+    ctx.strokeText(String(text), x, y + 0.5);
+    ctx.fillStyle = `rgba(255, 255, 255, ${textAlpha})`;
+    ctx.fillText(String(text), x, y + 0.5);
 };
 
 const getObjectStackOffset = (object) => {
@@ -435,20 +463,24 @@ const buildSliderPathPointsOsu = (object) => {
     }
 
     const stackOffset = getObjectStackOffset(object);
-    const basePoints = dedupeAdjacentPoints([
+    const rawPoints = [
         { x: object.x + stackOffset.x, y: object.y + stackOffset.y },
         ...(Array.isArray(object.sliderPoints) ? object.sliderPoints : []).map((point) => ({
             x: point.x + stackOffset.x,
             y: point.y + stackOffset.y
         }))
-    ]);
+    ];
+
+    const curveType = String(object.sliderCurveType || 'B').toUpperCase();
+    const basePoints = curveType === 'B'
+        ? rawPoints
+        : dedupeAdjacentPoints(rawPoints);
 
     if (basePoints.length < 2) {
         object._cachedSliderPathPoints = basePoints;
         return basePoints;
     }
 
-    const curveType = String(object.sliderCurveType || 'B').toUpperCase();
     let sampled;
     if (curveType === 'L') {
         sampled = basePoints;
@@ -657,12 +689,17 @@ const assignComboIndices = (objects, comboColours = DEFAULT_COMBO_COLOURS) => {
     const colours = (comboColours && comboColours.length) ? comboColours : DEFAULT_COMBO_COLOURS;
     const colourCount = Math.max(1, colours.length);
     let comboIndex = 0;
+    let comboNumber = 1;
 
     for (let i = 0; i < objects.length; i++) {
         if (i > 0 && objects[i].newCombo) {
             comboIndex = (comboIndex + 1 + (objects[i].comboSkip || 0)) % colourCount;
+            comboNumber = 1;
+        } else if (i > 0) {
+            comboNumber += 1;
         }
         objects[i].comboIndex = comboIndex;
+        objects[i].comboNumber = comboNumber;
     }
 };
 
@@ -723,40 +760,31 @@ const drawFollowPoints = ({
         return;
     }
 
-    const fadeOutMs = LONG_OBJECT_POST_HIT_FADE_MS;
     for (let i = 0; i < objects.length - 1; i++) {
         const current = objects[i];
         const next = objects[i + 1];
-        if (!current || !next) {
-            continue;
-        }
-        if ((current.comboIndex ?? 0) !== (next.comboIndex ?? 0)) {
-            continue;
-        }
-        if (current.kind === 'spinner' || next.kind === 'spinner') {
-            continue;
-        }
-        if (next.time > maxVisibleTime || next.endTime < minVisibleTime) {
-            continue;
-        }
+        if (!current || !next) continue;
+        if ((current.comboIndex ?? 0) !== (next.comboIndex ?? 0)) continue;
+        if (current.kind === 'spinner' || next.kind === 'spinner') continue;
+        if (next.time > maxVisibleTime || next.endTime < minVisibleTime) continue;
 
         const fadeInStart = next.time - preemptMs;
         const fadeInPeak = next.time - (preemptMs * 0.35);
-        const fadeOutEnd = next.time + fadeOutMs;
-
-        if (currentTime < fadeInStart || currentTime > fadeOutEnd) {
-            continue;
-        }
+        const fadeOutStart = next.time - FOLLOW_POINT_FADE_LEAD_MS;
+        const fadeOutEnd = fadeOutStart + FOLLOW_POINT_FADE_OUT_MS;
+        if (currentTime < fadeInStart || currentTime > fadeOutEnd) continue;
 
         let alpha = 1;
+        let fadeOutProgress = 0;
+        let fadeOutTrimProgress = 0;
         if (currentTime < fadeInPeak) {
             alpha = clamp((currentTime - fadeInStart) / Math.max(1, fadeInPeak - fadeInStart), 0, 1);
-        } else if (currentTime > next.time) {
-            alpha = 1 - clamp((currentTime - next.time) / fadeOutMs, 0, 1);
+        } else if (currentTime >= fadeOutStart) {
+            fadeOutProgress = clamp((currentTime - fadeOutStart) / FOLLOW_POINT_FADE_OUT_MS, 0, 1);
+            fadeOutTrimProgress = 1 - Math.pow(1 - fadeOutProgress, 2.2);
+            alpha = 1 - fadeOutTrimProgress;
         }
-        if (alpha <= 0.02) {
-            continue;
-        }
+        if (alpha <= 0.003) continue;
 
         const start = getObjectEndPositionOsu(current);
         const end = getObjectStartPositionOsu(next);
@@ -764,16 +792,9 @@ const drawFollowPoints = ({
         const dy = end.y - start.y;
         const distance = Math.hypot(dx, dy);
         const minGapDistance = (circleRadius * 2) + 2;
-        if (!Number.isFinite(distance) || distance <= minGapDistance) {
-            continue;
-        }
+        if (!Number.isFinite(distance) || distance <= minGapDistance) continue;
 
         const trim = (circleRadius * 1.02) + 1;
-        const visibleLength = distance - (trim * 2);
-        if (visibleLength <= 2) {
-            continue;
-        }
-
         const startCanvas = toCanvas(start.x, start.y);
         const endCanvas = toCanvas(end.x, end.y);
         const nx = dx / distance;
@@ -784,12 +805,42 @@ const drawFollowPoints = ({
         const toX = endCanvas.x - (nx * trim);
         const toY = endCanvas.y - (ny * trim);
 
+        let drawFromX = fromX;
+        let drawFromY = fromY;
+        let drawToX = toX;
+        let drawToY = toY;
+
+        if (fadeOutTrimProgress > 0) {
+            const lineDx = toX - fromX;
+            const lineDy = toY - fromY;
+            const lineLength = Math.hypot(lineDx, lineDy);
+            if (lineLength <= 0.001) {
+                continue;
+            }
+
+            const ux = lineDx / lineLength;
+            const uy = lineDy / lineLength;
+            const totalTrim = lineLength * (0.98 * fadeOutTrimProgress);
+            const startTrim = totalTrim * 0.68;
+            const endTrim = totalTrim - startTrim;
+            drawFromX = fromX + (ux * startTrim);
+            drawFromY = fromY + (uy * startTrim);
+            drawToX = toX - (ux * endTrim);
+            drawToY = toY - (uy * endTrim);
+
+            if (Math.hypot(drawToX - drawFromX, drawToY - drawFromY) <= 0.4) {
+                continue;
+            }
+        }
+
         ctx.strokeStyle = `rgba(255, 255, 255, ${clamp(alpha * 0.2, 0, 1)})`;
-        ctx.lineWidth = Math.max(0.9, circleRadius * 0.08);
+        const baseLineWidth = Math.max(0.9, circleRadius * 0.08);
+        const widthScale = 1 - (fadeOutTrimProgress * 0.65);
+        ctx.lineWidth = Math.max(0.35, baseLineWidth * widthScale);
         ctx.lineCap = 'round';
         ctx.beginPath();
-        ctx.moveTo(fromX, fromY);
-        ctx.lineTo(toX, toY);
+        ctx.moveTo(drawFromX, drawFromY);
+        ctx.lineTo(drawToX, drawToY);
         ctx.stroke();
     }
 };
@@ -1313,7 +1364,7 @@ const render = () => {
     const circleRadius = getCircleRadius(state.mapData.circleSize) * scale;
     const drawnCircleRadius = circleRadius * DRAWN_CIRCLE_RADIUS_SCALE;
     const sliderBodyRadius = Math.max(2, drawnCircleRadius * 0.95);
-    const minVisibleTime = state.currentTime - LONG_OBJECT_POST_HIT_FADE_MS;
+    const minVisibleTime = state.currentTime - Math.max(LONG_OBJECT_POST_HIT_FADE_MS, SLIDER_HEAD_HIT_FADE_MS);
     const maxVisibleTime = state.currentTime + preemptMs + 220;
 
     drawFollowPoints({
@@ -1349,8 +1400,23 @@ const render = () => {
     });
 
     for (const object of visibleObjects) {
-
         const combo = comboColours[object.comboIndex % comboColours.length] || DEFAULT_COMBO_COLOURS[0];
+        let sliderHeadCanvasPoint = null;
+        let sliderHeadElapsedMs = -1;
+        let sliderHeadHitProgress = 0;
+        let sliderHeadHitAlpha = 0;
+        let sliderHeadHitRadius = drawnCircleRadius;
+        if (object.kind === 'slider') {
+            const sliderHead = getObjectStartPositionOsu(object);
+            sliderHeadCanvasPoint = toCanvas(sliderHead.x, sliderHead.y);
+            sliderHeadElapsedMs = state.currentTime - object.time;
+            if (sliderHeadElapsedMs >= 0) {
+                sliderHeadHitProgress = clamp(sliderHeadElapsedMs / SLIDER_HEAD_HIT_FADE_MS, 0, 1);
+                const sliderHeadHitEaseOut = 1 - ((1 - sliderHeadHitProgress) * (1 - sliderHeadHitProgress));
+                sliderHeadHitAlpha = 0.95 * (1 - sliderHeadHitEaseOut);
+                sliderHeadHitRadius = drawnCircleRadius * (1 + (SLIDER_HEAD_HIT_SCALE_BOOST * sliderHeadHitEaseOut));
+            }
+        }
         let objectPosition = getObjectStartPositionOsu(object);
         if (object.kind === 'slider' && state.currentTime >= object.time) {
             const sampledTime = clamp(state.currentTime, object.time, object.endTime);
@@ -1359,28 +1425,39 @@ const render = () => {
         const point = toCanvas(objectPosition.x, objectPosition.y);
         const timeUntil = object.time - state.currentTime;
         const fadeAnchorTime = object.kind === 'circle' ? object.time : object.endTime;
-        const fadeWindowMs = object.kind === 'circle' ? CIRCLE_POST_HIT_FADE_MS : LONG_OBJECT_POST_HIT_FADE_MS;
+        const fadeWindowMs = object.kind === 'circle'
+            ? Math.max(CIRCLE_POST_HIT_FADE_MS, SLIDER_HEAD_HIT_FADE_MS)
+            : LONG_OBJECT_POST_HIT_FADE_MS;
         const timeSinceFadeAnchor = state.currentTime - fadeAnchorTime;
 
-        let baseAlpha = 0.78;
+        let baseAlpha = OBJECT_VISUAL_MAX_ALPHA;
         if (timeUntil > 0) {
             const fadeInProgress = 1 - clamp(timeUntil / preemptMs, 0, 1);
-            baseAlpha = 0.82 * Math.pow(fadeInProgress, 1.75);
+            baseAlpha = OBJECT_VISUAL_MAX_ALPHA * Math.pow(fadeInProgress, 2.2);
         } else if (timeSinceFadeAnchor > 0) {
-            baseAlpha = 0.82 * (1 - clamp(timeSinceFadeAnchor / fadeWindowMs, 0, 1));
+            const fadeOutProgress = clamp(timeSinceFadeAnchor / fadeWindowMs, 0, 1);
+            const fadeOutAlpha = Math.pow(1 - fadeOutProgress, 1.8);
+            baseAlpha = OBJECT_VISUAL_MAX_ALPHA * fadeOutAlpha;
         } else {
-            baseAlpha = 0.82;
+            baseAlpha = OBJECT_VISUAL_MAX_ALPHA;
         }
 
-        if (baseAlpha <= 0.03) {
-            continue;
+        let objectRenderAlpha = baseAlpha;
+        let objectRenderRadius = drawnCircleRadius;
+        if (object.kind === 'circle' && timeSinceFadeAnchor >= 0) {
+            const circleHitProgress = clamp(timeSinceFadeAnchor / SLIDER_HEAD_HIT_FADE_MS, 0, 1);
+            const circleHitEaseOut = 1 - ((1 - circleHitProgress) * (1 - circleHitProgress));
+            objectRenderAlpha = OBJECT_VISUAL_MAX_ALPHA * Math.pow(1 - circleHitEaseOut, 1.25);
+            objectRenderRadius = drawnCircleRadius * (1 + (SLIDER_HEAD_HIT_SCALE_BOOST * circleHitEaseOut));
         }
+        if (objectRenderAlpha <= 0.001) continue;
 
         if (object.kind === 'slider') {
             const pathPoints = buildSliderPathPointsOsu(object).map((p) => toCanvas(p.x, p.y));
             if (pathPoints.length > 1) {
-                ctx.strokeStyle = withAlpha({ r: 255, g: 255, b: 255 }, baseAlpha * 0.28);
-                ctx.lineWidth = (sliderBodyRadius * 2) + Math.max(1, circleRadius * 0.12);
+                const sliderBodyOutlineAlpha = clamp((baseAlpha * 0.9) + 0.015, 0, 0.86);
+                ctx.strokeStyle = withAlpha({ r: 255, g: 255, b: 255 }, sliderBodyOutlineAlpha);
+                ctx.lineWidth = (sliderBodyRadius * 2) + Math.max(1.3, circleRadius * 0.16);
                 ctx.lineCap = 'round';
                 ctx.lineJoin = 'round';
                 ctx.beginPath();
@@ -1467,16 +1544,67 @@ const render = () => {
             ctx.stroke();
         }
 
-        ctx.fillStyle = withAlpha(combo, baseAlpha);
+        const objectBodyBaseAlpha = clamp((objectRenderAlpha * 0.9) + 0.015, 0, 0.86);
+        const objectBodyComboAlpha = clamp(objectRenderAlpha * 0.65, 0, 1);
+        ctx.fillStyle = withAlpha({ r: 255, g: 255, b: 255 }, objectBodyBaseAlpha);
         ctx.beginPath();
-        ctx.arc(point.x, point.y, drawnCircleRadius, 0, Math.PI * 2);
+        ctx.arc(point.x, point.y, objectRenderRadius, 0, Math.PI * 2);
         ctx.fill();
 
-        ctx.strokeStyle = withAlpha({ r: 255, g: 255, b: 255 }, 0.75 * baseAlpha);
-        ctx.lineWidth = Math.max(1.3, drawnCircleRadius * 0.1);
+        ctx.fillStyle = withAlpha(combo, objectBodyComboAlpha);
         ctx.beginPath();
-        ctx.arc(point.x, point.y, drawnCircleRadius, 0, Math.PI * 2);
+        ctx.arc(point.x, point.y, objectRenderRadius, 0, Math.PI * 2);
+        ctx.fill();
+
+        const objectOutlineAlpha = clamp((objectRenderAlpha * 1.12) + 0.03, 0, 1);
+        const objectOutlineWidth = Math.max(1.3, objectRenderRadius * 0.1);
+        const objectOutlineRadius = Math.max(0.5, objectRenderRadius - (objectOutlineWidth * 0.5));
+        ctx.strokeStyle = withAlpha({ r: 255, g: 255, b: 255 }, objectOutlineAlpha);
+        ctx.lineWidth = objectOutlineWidth;
+        ctx.beginPath();
+        ctx.arc(point.x, point.y, objectOutlineRadius, 0, Math.PI * 2);
         ctx.stroke();
+
+        if (object.kind === 'slider' && sliderHeadCanvasPoint && sliderHeadHitAlpha > 0.001) {
+            ctx.fillStyle = withAlpha(combo, sliderHeadHitAlpha);
+            ctx.beginPath();
+            ctx.arc(sliderHeadCanvasPoint.x, sliderHeadCanvasPoint.y, sliderHeadHitRadius, 0, Math.PI * 2);
+            ctx.fill();
+
+            const sliderHeadOutlineAlpha = clamp((sliderHeadHitAlpha * 1.2) + 0.05, 0, 1);
+            const sliderHeadOutlineWidth = Math.max(1.5, sliderHeadHitRadius * 0.12);
+            const sliderHeadOutlineRadius = Math.max(0.5, sliderHeadHitRadius - (sliderHeadOutlineWidth * 0.5));
+            ctx.strokeStyle = withAlpha({ r: 255, g: 255, b: 255 }, sliderHeadOutlineAlpha);
+            ctx.lineWidth = sliderHeadOutlineWidth;
+            ctx.beginPath();
+            ctx.arc(sliderHeadCanvasPoint.x, sliderHeadCanvasPoint.y, sliderHeadOutlineRadius, 0, Math.PI * 2);
+            ctx.stroke();
+        }
+
+        if ((object.kind === 'circle' || object.kind === 'slider') && Number.isFinite(object.comboNumber)) {
+            let numberPosition = point;
+            let numberAlpha = objectRenderAlpha * 0.98;
+            let numberRadius = objectRenderRadius;
+
+            if (object.kind === 'slider' && sliderHeadCanvasPoint) {
+                numberPosition = sliderHeadCanvasPoint;
+                if (sliderHeadElapsedMs >= 0) {
+                    numberAlpha = sliderHeadHitAlpha * 0.98;
+                    numberRadius = sliderHeadHitRadius;
+                }
+            }
+
+            if (numberAlpha > 0.001) {
+                drawComboNumber(
+                    ctx,
+                    object.comboNumber,
+                    numberPosition.x,
+                    numberPosition.y,
+                    numberRadius,
+                    numberAlpha
+                );
+            }
+        }
     }
 };
 

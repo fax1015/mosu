@@ -35,6 +35,14 @@ const processCoverLoadQueue = async () => {
     isProcessingQueue = true;
 
     try {
+        // Build lookup maps once per processing cycle for O(1) access
+        const itemById = new Map();
+        const itemsByCoverPath = new Map();
+        for (const item of beatmapItems) {
+            itemById.set(item.id, item);
+            itemsByCoverPath.set(item.coverPath, item);
+        }
+
         while (coverLoadQueue.length > 0) {
             const batch = coverLoadQueue.splice(0, CONCURRENT_LOADS);
 
@@ -61,7 +69,7 @@ const processCoverLoadQueue = async () => {
                                 }
                             }
                             // Also update representative beatmap item
-                            const repItem = beatmapItems.find(i => i.coverPath === coverPath);
+                            const repItem = itemsByCoverPath.get(coverPath);
                             if (repItem) repItem.coverUrl = coverUrl;
                         }
 
@@ -71,7 +79,7 @@ const processCoverLoadQueue = async () => {
                         return;
                     }
 
-                    const item = beatmapItems.find(i => i.id === itemId);
+                    const item = itemById.get(itemId);
                     if (!item || item.coverPath !== coverPath) {
                         return;
                     }

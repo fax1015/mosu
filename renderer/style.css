@@ -85,8 +85,7 @@
 }
 
 html {
-    overflow-y: overlay;
-    overflow-x: hidden;
+    overflow: hidden;
     height: 100%;
 }
 
@@ -97,9 +96,11 @@ body {
 }
 
 body {
-    min-height: 100%;
+    height: 100vh;
     width: 100%;
-    overflow: visible;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
     line-height: 1.5;
     -webkit-font-smoothing: antialiased;
     font-family: var(--font-family-sans);
@@ -256,6 +257,7 @@ h6 {
     gap: 1rem;
     position: relative;
     z-index: 12000;
+    flex-shrink: 0;
 }
 
 .header-nav {
@@ -276,11 +278,11 @@ h6 {
 }
 
 .sticky-header-container {
-    position: sticky;
-    top: 0;
+    position: relative;
     z-index: 11000;
     background-color: var(--bg-primary);
     width: 100%;
+    flex-shrink: 0;
 }
 
 /* Tabs Bar */
@@ -549,6 +551,31 @@ body.is-dragging-any * {
     padding: 1rem;
     position: relative;
     z-index: 0;
+    flex: 1;
+    overflow-y: auto;
+    overflow-x: hidden;
+    min-height: 0;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(128, 128, 128, 0.5) transparent;
+}
+
+/* Custom scrollbar for main-container (WebKit browsers) */
+.main-container::-webkit-scrollbar {
+    width: 8px;
+    background: transparent;
+}
+
+.main-container::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.main-container::-webkit-scrollbar-thumb {
+    background: rgba(128, 128, 128, 0.5);
+    border-radius: 4px;
+}
+
+.main-container::-webkit-scrollbar-thumb:hover {
+    background: rgba(128, 128, 128, 0.7);
 }
 
 
@@ -2853,6 +2880,8 @@ input:checked+.slider:before {
     /* major optimization — internal changes don't affect siblings */
     margin-top: 0;
 }
+
+
 
 .group-row.is-expanded {
     box-shadow: 0 6px 24px rgba(0, 0, 0, 0.4);

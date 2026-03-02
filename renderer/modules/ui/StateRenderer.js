@@ -5,7 +5,7 @@
 
 import * as Store from '../state/Store.js';
 import { isGuestDifficultyItem, getEffectiveMapperName as getMapperName } from '../parsers/GuestDifficultyFilter.js';
-import { getStarRatingColor, formatDuration, normalizeMetadata } from '../utils/Helpers.js';
+import { getStarRatingColor, formatDuration, normalizeMetadata, formatProgressLabel } from '../utils/Helpers.js';
 import { applyTimelineToBox } from '../services/TimelineRenderer.js';
 import { buildListItem, applyCalculatedStarTagState } from './ListItemBuilder.js';
 import { renderVirtualList, setItemsToRender } from './VirtualList.js';
@@ -116,16 +116,19 @@ export const updateTabCounts = (todoIds, doneIds, total, beatmapItems, isGuestDi
     const todoCountEl = document.querySelector('#todoCount');
     const completedCountEl = document.querySelector('#completedCount');
 
+    // Build Map once for O(1) lookups - fixes O(n²) complexity from .find() in loops
+    const itemMap = new Map(effectiveBeatmapItems.map(i => [i.id, i]));
+
     const visibleItems = effectiveBeatmapItems.filter(item => !effectiveIsGuestDifficultyItemFn(item));
     const visibleAllCount = visibleItems.length;
     const visibleTodoCount = effectiveTodoIds.reduce((count, id) => {
-        const item = effectiveBeatmapItems.find(i => i.id === id);
+        const item = itemMap.get(id);
         if (!item) return count;
         if (effectiveIsGuestDifficultyItemFn(item)) return count;
         return count + 1;
     }, 0);
     const visibleDoneCount = effectiveDoneIds.reduce((count, id) => {
-        const item = effectiveBeatmapItems.find(i => i.id === id);
+        const item = itemMap.get(id);
         if (!item) return count;
         if (effectiveIsGuestDifficultyItemFn(item)) return count;
         return count + 1;
@@ -196,6 +199,7 @@ export const updateListItemElement = (itemId, item, callbacks = {}) => {
     const itemData = item || beatmapItems.find(i => i.id === itemId);
     if (itemData) {
         el.dataset.progress = String(itemData.progress || 0);
+        el.dataset.progressPending = itemData.progressPending ? 'true' : 'false';
     }
 
     // Update calculated SR tag
@@ -214,9 +218,11 @@ export const updateListItemElement = (itemId, item, callbacks = {}) => {
     // Update progress stat
     const progressStat = el.querySelector('.progress-stat');
     if (progressStat) {
-        const baseProgress = itemData ? (itemData.progress || 0) : (Number(el.dataset.progress) || 0);
-        const displayProgress = isDone ? 1 : baseProgress;
-        progressStat.innerHTML = `<strong>Progress:</strong> ${Math.round(displayProgress * 100)}%`;
+        const progressData = itemData || {
+            progress: Number(el.dataset.progress) || 0,
+            progressPending: el.dataset.progressPending === 'true'
+        };
+        progressStat.innerHTML = `<strong>Progress:</strong> ${formatProgressLabel(progressData, isDone)}`;
     }
 
     // Update duration stat if we have duration data
@@ -315,8 +321,37 @@ export const sortItemsArray = (items, mode, direction, settings = {}) => {
     return sorted;
 };
 
+// ============================================
+// Filter Memoization
+// ============================================
+
+/** @type {Map<string, Array<Object>>} Cache for filter results */
+const filterCache = new Map();
+
+/** @type {number} Maximum cache size */
+const MAX_FILTER_CACHE_SIZE = 5;
+
 /**
- * Filter items by search query and star rating
+ * Generate cache key for filter operation
+ * @param {number} itemCount - Number of items
+ * @param {string} query - Search query
+ * @param {Object} srFilter - Star rating filter
+ * @param {string} modeFilter - Mode filter
+ * @returns {string} Cache key
+ */
+const getFilterCacheKey = (itemCount, query, srFilter, modeFilter) => {
+    return `${itemCount}|${query || ''}|${srFilter.min}-${srFilter.max}|${modeFilter}`;
+};
+
+/**
+ * Clear filter cache - call when items change
+ */
+export const clearFilterCache = () => {
+    filterCache.clear();
+};
+
+/**
+ * Filter items by search query and star rating with memoization
  * @param {Array<Object>} items - Items to filter
  * @param {string} query - Search query
  * @param {Object} srFilter - Star rating filter { min, max }
@@ -324,6 +359,13 @@ export const sortItemsArray = (items, mode, direction, settings = {}) => {
  * @returns {Array<Object>} Filtered items
  */
 export const filterItemsArray = (items, query, srFilter, modeFilter = 'all') => {
+    // Check cache first
+    const cacheKey = getFilterCacheKey(items.length, query, srFilter, modeFilter);
+    const cached = filterCache.get(cacheKey);
+    if (cached) {
+        return cached;
+    }
+
     let filtered = items;
     const normalizedModeFilter = (
         modeFilter === 'standard' ||
@@ -347,8 +389,10 @@ export const filterItemsArray = (items, query, srFilter, modeFilter = 'all') => 
     // Apply text search filter if query exists
     if (query) {
         const needle = query.toLowerCase();
+        // Pre-compute searchable text for all items to avoid repeated string operations
         filtered = filtered.filter((item) => {
-            return [
+            // Use cached searchable text if available
+            const text = item._searchableText || [
                 item.title,
                 item.titleUnicode,
                 item.artist,
@@ -356,9 +400,12 @@ export const filterItemsArray = (items, query, srFilter, modeFilter = 'all') => 
                 item.creator,
                 item.version,
                 item.beatmapSetID,
-            ]
-                .filter(Boolean)
-                .some((value) => String(value).toLowerCase().includes(needle));
+            ].filter(Boolean).join(' ').toLowerCase();
+            // Cache for future use
+            if (!item._searchableText) {
+                item._searchableText = text;
+            }
+            return text.includes(needle);
         });
     }
 
@@ -377,6 +424,13 @@ export const filterItemsArray = (items, query, srFilter, modeFilter = 'all') => 
     if (normalizedModeFilter !== 'all') {
         filtered = filtered.filter((item) => matchesModeFilter(item));
     }
+
+    // Cache result with LRU eviction
+    if (filterCache.size >= MAX_FILTER_CACHE_SIZE) {
+        const firstKey = filterCache.keys().next().value;
+        filterCache.delete(firstKey);
+    }
+    filterCache.set(cacheKey, filtered);
 
     return filtered;
 };
@@ -461,14 +515,20 @@ export const renderFromState = (callbacks = {}) => {
             itemMap.set(item.id, item);
         }
 
+        // Pre-filter items by mode filter to avoid per-item filter calls
+        const modeFilteredIds = new Set(
+            filterItemsArray(
+                effectiveCallbacks.beatmapItems,
+                '',
+                { min: 0, max: 10 },
+                effectiveCallbacks.modeFilter
+            ).map(i => i.id)
+        );
+
         // In TODO mode, we only show items in todoIds (in that specific order) and exclude hidden guest difficulties
         for (const id of effectiveCallbacks.todoIds) {
             const item = itemMap.get(id);
-            if (item && !effectiveCallbacks.isGuestDifficultyItem(item, _cachedMapperNeedles)) {
-                const filtered = filterItemsArray([item], '', { min: 0, max: 10 }, effectiveCallbacks.modeFilter);
-                if (!filtered.length) {
-                    continue;
-                }
+            if (item && !effectiveCallbacks.isGuestDifficultyItem(item, _cachedMapperNeedles) && modeFilteredIds.has(id)) {
                 itemsToRender.push(item);
             }
         }
@@ -479,14 +539,20 @@ export const renderFromState = (callbacks = {}) => {
             itemMap.set(item.id, item);
         }
 
+        // Pre-filter items by mode filter to avoid per-item filter calls
+        const modeFilteredIds = new Set(
+            filterItemsArray(
+                effectiveCallbacks.beatmapItems,
+                '',
+                { min: 0, max: 10 },
+                effectiveCallbacks.modeFilter
+            ).map(i => i.id)
+        );
+
         // In Completed mode, show items that have been marked done in the order of doneIds, excluding hidden
         for (const id of effectiveCallbacks.doneIds) {
             const item = itemMap.get(id);
-            if (item && !effectiveCallbacks.isGuestDifficultyItem(item, _cachedMapperNeedles)) {
-                const filtered = filterItemsArray([item], '', { min: 0, max: 10 }, effectiveCallbacks.modeFilter);
-                if (!filtered.length) {
-                    continue;
-                }
+            if (item && !effectiveCallbacks.isGuestDifficultyItem(item, _cachedMapperNeedles) && modeFilteredIds.has(id)) {
                 itemsToRender.push(item);
             }
         }
@@ -531,6 +597,7 @@ export const renderFromState = (callbacks = {}) => {
     _searchQuery = effectiveCallbacks.searchQuery;
     _srFilter = effectiveCallbacks.srFilter;
     _settings = effectiveCallbacks.settings;
+
 };
 
 // ============================================
