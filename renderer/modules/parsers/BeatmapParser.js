@@ -207,6 +207,8 @@ export const parseHitObjects = (content) => {
  *   bpmMin: number,
  *   bpmMax: number,
  *   comboColours: Array<{r:number,g:number,b:number}>,
+ *   sliderTickRate: number,
+ *   timingPoints: Array<{time:number,beatLength:number,uninherited:boolean}>,
  *   maxObjectTime: number
  * }} Parsed preview data
  */
@@ -220,6 +222,7 @@ export const parseMapPreviewData = (content, options = {}) => {
 
     let section = '';
     let sliderMultiplier = 1.0;
+    let sliderTickRate = 1.0;
     let circleSize = 5;
     let approachRate = 5;
     let overallDifficulty = 5;
@@ -292,6 +295,8 @@ export const parseMapPreviewData = (content, options = {}) => {
 
             if (key === 'slidermultiplier') {
                 sliderMultiplier = value || 1.0;
+            } else if (key === 'slidertickrate') {
+                sliderTickRate = value || 1.0;
             } else if (key === 'circlesize') {
                 circleSize = value;
             } else if (key === 'approachrate') {
@@ -421,6 +426,8 @@ export const parseMapPreviewData = (content, options = {}) => {
         stackLeniency: Number.isFinite(stackLeniency) ? stackLeniency : 0.7,
         mode: Number.isFinite(mode) ? Math.min(Math.max(mode, 0), 3) : 0,
         sliderMultiplier: Number.isFinite(sliderMultiplier) ? sliderMultiplier : 1.0,
+        sliderTickRate: Number.isFinite(sliderTickRate) && sliderTickRate > 0 ? sliderTickRate : 1.0,
+        timingPoints,
         bpmMin,
         bpmMax,
         comboColours: parseColours(content),

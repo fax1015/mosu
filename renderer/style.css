@@ -2997,7 +2997,9 @@ input:checked+.slider:before {
     flex-shrink: 0;
     overflow-y: auto;
     overflow-x: hidden;
-    padding: 0 0.75rem 0 0.875rem;
+    padding: 0 0.75rem 0 2rem;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(255, 255, 255, 0.08) transparent;
 }
 
 .group-row-carousel::before,
@@ -3007,7 +3009,21 @@ input:checked+.slider:before {
 }
 
 .group-row-carousel::-webkit-scrollbar {
-    width: 3px;
+    width: 2px;
+}
+
+.group-row-carousel::-webkit-scrollbar-button {
+    display: none;
+    width: 0;
+    height: 0;
+}
+
+.group-row-carousel::-webkit-scrollbar-button:single-button,
+.group-row-carousel::-webkit-scrollbar-button:start:decrement,
+.group-row-carousel::-webkit-scrollbar-button:end:increment {
+    display: none;
+    width: 0;
+    height: 0;
 }
 
 .group-row-carousel::-webkit-scrollbar-track {
@@ -3016,12 +3032,17 @@ input:checked+.slider:before {
 }
 
 .group-row-carousel::-webkit-scrollbar-thumb {
-    background: rgba(255, 255, 255, 0.07);
+    background: rgba(255, 255, 255, 0.08);
     border-radius: 999px;
+    border: 0;
+    background-clip: border-box;
 }
 
-.group-row-carousel:hover::-webkit-scrollbar-thumb {
-    background: rgba(255, 255, 255, 0.18);
+.group-row-carousel::-webkit-scrollbar-thumb:hover,
+.group-row-carousel::-webkit-scrollbar-thumb:active {
+    background: rgba(255, 255, 255, 0.08);
+    border: 0;
+    background-clip: border-box;
 }
 
 .group-row-version-chip {
