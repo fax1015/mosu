@@ -176,6 +176,15 @@ export const buildGroupHeaderRow = (group, groupIndex, callbacks) => {
     // Right: version carousel
     const carousel = document.createElement('div');
     carousel.classList.add('group-row-carousel');
+    const carouselViewport = document.createElement('div');
+    carouselViewport.classList.add('group-row-carousel-viewport');
+    const carouselScrollbar = document.createElement('div');
+    carouselScrollbar.classList.add('group-row-carousel-scrollbar');
+    const carouselThumb = document.createElement('div');
+    carouselThumb.classList.add('group-row-carousel-scrollbar-thumb');
+    carouselScrollbar.appendChild(carouselThumb);
+    carousel.appendChild(carouselViewport);
+    carousel.appendChild(carouselScrollbar);
 
     // Expand/collapse chevron
     const chevronWrap = document.createElement('div');
@@ -196,6 +205,40 @@ export const buildGroupHeaderRow = (group, groupIndex, callbacks) => {
     header.appendChild(coverSection);
     header.appendChild(carousel);
     header.appendChild(chevronWrap);
+
+    const syncCarouselScrollbar = () => {
+        const scrollHeight = carouselViewport.scrollHeight;
+        const clientHeight = carouselViewport.clientHeight;
+        const maxScrollTop = scrollHeight - clientHeight;
+
+        if (maxScrollTop <= 1) {
+            carouselScrollbar.classList.add('is-hidden');
+            carouselThumb.style.height = '0';
+            carouselThumb.style.transform = 'translateY(0)';
+            return;
+        }
+
+        carouselScrollbar.classList.remove('is-hidden');
+        const trackHeight = carouselScrollbar.clientHeight;
+        const thumbHeight = Math.max(18, Math.round((clientHeight / scrollHeight) * trackHeight));
+        const maxThumbOffset = Math.max(trackHeight - thumbHeight, 0);
+        const scrollRatio = maxScrollTop > 0 ? (carouselViewport.scrollTop / maxScrollTop) : 0;
+        const thumbOffset = Math.round(maxThumbOffset * scrollRatio);
+
+        carouselThumb.style.height = `${thumbHeight}px`;
+        carouselThumb.style.transform = `translateY(${thumbOffset}px)`;
+    };
+
+    carouselViewport.addEventListener('scroll', syncCarouselScrollbar, { passive: true });
+    if (window.ResizeObserver) {
+        const resizeObserver = new ResizeObserver(() => {
+            syncCarouselScrollbar();
+        });
+        resizeObserver.observe(carousel);
+        resizeObserver.observe(carouselViewport);
+    } else {
+        window.addEventListener('resize', syncCarouselScrollbar, { passive: true });
+    }
 
     // ---- Children (CSS Grid animated: 0fr → 1fr, zero JS measurements needed) ----
     const childrenContainer = document.createElement('div');
@@ -237,51 +280,48 @@ export const buildGroupHeaderRow = (group, groupIndex, callbacks) => {
     // If starting expanded, build immediately
     if (isExpanded) ensureChildrenBuilt();
 
-    // ---- Toggle logic (race-condition-free) ----
-    let isAnimating = false;
-    let animSafetyTimer = null;
+    // ---- Toggle logic ----
+    let queuedOpenFrame = 0;
+    let queuedOpenCommitFrame = 0;
 
-    header.addEventListener('click', () => {
-        if (isAnimating) return;
+    const cancelQueuedOpen = () => {
+        if (queuedOpenFrame) {
+            cancelAnimationFrame(queuedOpenFrame);
+            queuedOpenFrame = 0;
+        }
+        if (queuedOpenCommitFrame) {
+            cancelAnimationFrame(queuedOpenCommitFrame);
+            queuedOpenCommitFrame = 0;
+        }
+    };
 
-        const wasExpanded = groupedExpandedKeys.has(key);
-        isAnimating = true;
+    const setExpandedState = (shouldExpand) => {
+        cancelQueuedOpen();
 
-        // Release the lock once the CSS transition ends (or after a safety timeout)
-        const release = () => {
-            isAnimating = false;
-            if (animSafetyTimer) { clearTimeout(animSafetyTimer); animSafetyTimer = null; }
-        };
-
-        const onTransitionEnd = (e) => {
-            // Only handle the grid transition (not opacity/transform on children)
-            if (e.propertyName === 'grid-template-rows') {
-                release();
-            }
-        };
-
-        childrenContainer.addEventListener('transitionend', onTransitionEnd, { once: true });
-        animSafetyTimer = setTimeout(() => {
-            release();
-        }, 600); // fallback if transitionend doesn't fire
-
-        if (wasExpanded) {
+        if (!shouldExpand) {
             groupedExpandedKeys.delete(key);
             groupEl.classList.remove('is-expanded');
             childrenContainer.classList.remove('is-open');
-            // Children stay in DOM (hidden by 0fr grid row) — re-opening is instant
-        } else {
-            groupedExpandedKeys.add(key);
-            groupEl.classList.add('is-expanded');
-            ensureChildrenBuilt(); // lazy build on first expand
-
-            // Wait for DOM to settle before animating to avoid layout thrash
-            requestAnimationFrame(() => {
-                requestAnimationFrame(() => {
-                    childrenContainer.classList.add('is-open');
-                });
-            });
+            return;
         }
+
+        groupedExpandedKeys.add(key);
+        groupEl.classList.add('is-expanded');
+        ensureChildrenBuilt(); // lazy build on first expand
+
+        // Defer the open class so the browser can animate from 0fr.
+        queuedOpenFrame = requestAnimationFrame(() => {
+            queuedOpenFrame = 0;
+            queuedOpenCommitFrame = requestAnimationFrame(() => {
+                queuedOpenCommitFrame = 0;
+                if (!groupedExpandedKeys.has(key)) return;
+                childrenContainer.classList.add('is-open');
+            });
+        });
+    };
+
+    header.addEventListener('click', () => {
+        setExpandedState(!groupedExpandedKeys.has(key));
     });
 
     // ---- Build Chips (placed here to safely reference childrenInner in closure) ----
@@ -326,8 +366,10 @@ export const buildGroupHeaderRow = (group, groupIndex, callbacks) => {
                 }
             }, wasExpanded ? 50 : 500);
         });
-        carousel.appendChild(chip);
+        carouselViewport.appendChild(chip);
     });
+
+    requestAnimationFrame(syncCarouselScrollbar);
 
     groupEl.appendChild(header);
     groupEl.appendChild(childrenContainer);
@@ -429,14 +471,15 @@ export const renderGroupedView = (listContainer, groups, callbacks) => {
  * @param {HTMLElement} headerEl - Group header element
  */
 export const toggleGroupExpansion = (groupKey, headerEl) => {
+    if (headerEl) {
+        headerEl.click();
+        return;
+    }
+
     if (groupedExpandedKeys.has(groupKey)) {
         groupedExpandedKeys.delete(groupKey);
     } else {
         groupedExpandedKeys.add(groupKey);
-    }
-    // Trigger click on header to handle animation
-    if (headerEl) {
-        headerEl.click();
     }
 };
 

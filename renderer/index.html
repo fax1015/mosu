@@ -186,12 +186,44 @@
         </form>
     </dialog>
 
+    <dialog class="prompt-dialog" id="clientPrompt" tabindex="-1">
+        <form method="dialog" class="prompt-dialog-form">
+            <p class="prompt-dialog-label">Which osu! client are you using?</p>
+            <p class="settings-description prompt-dialog-description">Pick the client you want mosu! to scan.</p>
+            <div class="client-option-grid" role="group" aria-label="osu client selection">
+                <button type="button" class="client-option-card" id="clientPromptStableBtn" data-client="stable">
+                    <span class="client-option-icon client-option-icon--stable" aria-hidden="true">
+                        <svg viewBox="0 0 512 512">
+                            <circle cx="256" cy="256" r="224"></circle>
+                            <circle cx="256" cy="256" r="126"></circle>
+                            <circle cx="256" cy="256" r="44"></circle>
+                        </svg>
+                    </span>
+                    <span class="client-option-copy">
+                        <span class="client-option-title">osu!stable</span>
+                        <span class="client-option-subtitle">Scan your Songs folder directly.</span>
+                    </span>
+                </button>
+                <button type="button" class="client-option-card" id="clientPromptLazerBtn" data-client="lazer">
+                    <span class="client-option-icon client-option-icon--lazer" aria-hidden="true">
+                        <svg viewBox="0 0 512 512">
+                            <path d="M256 32 80 144v224l176 112 176-112V144 32zm0 70.2 101.3 64.5L256 231.2l-101.3-64.5L256 102.2zm-112 126.1 88 56.1v118.3l-88-56.1V228.3zm136 174.4V284.4l88-56.1v118.3l-88 56.1z"></path>
+                        </svg>
+                    </span>
+                    <span class="client-option-copy">
+                        <span class="client-option-title">osu!lazer</span>
+                        <span class="client-option-subtitle">Scan lazer's hashed files store.</span>
+                    </span>
+                </button>
+            </div>
+        </form>
+    </dialog>
+
     <dialog class="prompt-dialog" id="firstRunPrompt">
         <form method="dialog" class="prompt-dialog-form">
             <p class="prompt-dialog-label">How would you like to import your maps?</p>
-            <p class="settings-description" style="margin-top: -0.5rem; margin-bottom: 0.5rem;">Choose to import all
-                maps from
-                your Songs folder, or only maps by a particular mapper.</p>
+            <p class="settings-description prompt-dialog-description" id="firstRunPromptDescription">Choose to import all
+                maps from your Songs folder, or only maps by a particular mapper.</p>
             <div class="prompt-dialog-actions">
                 <button type="button" class="secondary-button" id="firstRunAllBtn">Import all maps</button>
                 <button type="button" class="primary-button" id="firstRunMapperBtn">Only maps by a mapper</button>
@@ -213,9 +245,10 @@
 
     <dialog class="prompt-dialog" id="songsDirPrompt">
         <form method="dialog" class="prompt-dialog-form">
-            <p class="prompt-dialog-label">Locate your osu! Songs folder.</p>
-            <p class="settings-description" style="margin-top: -0.5rem; margin-bottom: 0.5rem;">We'll use this to
+            <p class="prompt-dialog-label" id="songsDirPromptTitle">Locate your osu! Songs folder.</p>
+            <p class="settings-description prompt-dialog-description" id="songsDirPromptDescription">We'll use this to
                 scan for your maps.</p>
+            <p class="settings-description" id="songsDirPromptHint">Common Windows path: %LocalAppData%\osu!\Songs</p>
             <div class="prompt-dialog-actions">
                 <button type="button" class="secondary-button" id="songsDirPromptCancel">Cancel</button>
                 <button type="submit" class="primary-button" id="songsDirPromptConfirm">Select Folder</button>
@@ -237,9 +270,43 @@
         <div class="settings-content">
             <div class="settings-section">
                 <h3 class="settings-section-title">Scanning</h3>
+                <div class="settings-item settings-item--stacked">
+                    <div class="settings-info">
+                        <p class="settings-label">osu! client</p>
+                        <p class="settings-description">Choose which library format mosu! should scan.</p>
+                    </div>
+                    <div class="client-option-grid client-option-grid--settings" role="group" aria-label="osu client setting">
+                        <button type="button" class="client-option-card client-option-card--compact" id="settingsClientStableBtn"
+                            data-client-option="stable">
+                            <span class="client-option-icon client-option-icon--stable" aria-hidden="true">
+                                <svg viewBox="0 0 512 512">
+                                    <circle cx="256" cy="256" r="224"></circle>
+                                    <circle cx="256" cy="256" r="126"></circle>
+                                    <circle cx="256" cy="256" r="44"></circle>
+                                </svg>
+                            </span>
+                            <span class="client-option-copy">
+                                <span class="client-option-title">Stable</span>
+                                <span class="client-option-subtitle">Classic Songs folder</span>
+                            </span>
+                        </button>
+                        <button type="button" class="client-option-card client-option-card--compact" id="settingsClientLazerBtn"
+                            data-client-option="lazer">
+                            <span class="client-option-icon client-option-icon--lazer" aria-hidden="true">
+                                <svg viewBox="0 0 512 512">
+                                    <path d="M256 32 80 144v224l176 112 176-112V144 32zm0 70.2 101.3 64.5L256 231.2l-101.3-64.5L256 102.2zm-112 126.1 88 56.1v118.3l-88-56.1V228.3zm136 174.4V284.4l88-56.1v118.3l-88 56.1z"></path>
+                                </svg>
+                            </span>
+                            <span class="client-option-copy">
+                                <span class="client-option-title">Lazer</span>
+                                <span class="client-option-subtitle">Hashed files store</span>
+                            </span>
+                        </button>
+                    </div>
+                </div>
                 <div class="settings-item">
                     <div class="settings-info">
-                        <p class="settings-label">Songs directory</p>
+                        <p class="settings-label" id="songsDirTitle">Songs directory</p>
                         <p class="settings-description" id="songsDirLabel">Not selected</p>
                     </div>
                     <button type="button" class="secondary-button" id="selectSongsDirBtn"

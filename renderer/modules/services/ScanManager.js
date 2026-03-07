@@ -35,8 +35,22 @@ let scanBatchUnlisten = null;
 /** @type {Function|null} */
 let scanCompleteUnlisten = null;
 
+/** @type {Function|null} */
+let scanStatusUnlisten = null;
+
 /** @type {boolean} */
 let isScanningActive = false;
+
+const formatStatusLabel = ({ stage, current = 0, total = 0, discoveredFiles } = {}) => {
+    switch (stage) {
+        case 'discovering':
+            return `Discovering lazer beatmaps... ${current} / ${total} files checked${typeof discoveredFiles === 'number' ? ` (${discoveredFiles} found)` : ''}`;
+        case 'filtering':
+            return `Filtering beatmaps by mapper... ${current} / ${total} files checked`;
+        default:
+            return `Processing ${current} / ${total} files...`;
+    }
+};
 
 // ============================================
 // Event Listeners
@@ -65,6 +79,27 @@ export const initScanEventListeners = async (callbacks = {}) => {
     if (scanCompleteUnlisten) {
         await scanCompleteUnlisten();
     }
+    if (scanStatusUnlisten) {
+        await scanStatusUnlisten();
+    }
+
+    scanStatusUnlisten = await tauriEvents.listen('scan-status', (payload) => {
+        if (!streamingScanState) return;
+
+        const { directory, stage, current = 0, total = 0, discoveredFiles } = payload;
+
+        if (directory) {
+            streamingScanState.directory = directory;
+        }
+
+        if (callbacks.updateProgress) {
+            callbacks.updateProgress(
+                current,
+                total,
+                formatStatusLabel({ stage, current, total, discoveredFiles })
+            );
+        }
+    });
 
     scanBatchUnlisten = await tauriEvents.listen('scan-batch', (payload) => {
         if (!streamingScanState) return;
@@ -219,7 +254,7 @@ export const startStreamingScan = (mode = 'directory', options = {}) => {
             options.callbacks.setLoading(true);
         }
         if (options.callbacks?.updateProgress) {
-            options.callbacks.updateProgress(0, 0);
+            options.callbacks.updateProgress(0, 0, 'Preparing scan...');
         }
     });
 };
@@ -377,6 +412,10 @@ export const cleanupScanListeners = async () => {
     if (scanCompleteUnlisten) {
         await scanCompleteUnlisten();
         scanCompleteUnlisten = null;
+    }
+    if (scanStatusUnlisten) {
+        await scanStatusUnlisten();
+        scanStatusUnlisten = null;
     }
 };
 

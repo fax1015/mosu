@@ -121,6 +121,21 @@ struct ParsedOsu {
     bookmarks: Vec<i32>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OsuClient {
+    Stable,
+    Lazer,
+}
+
+impl OsuClient {
+    fn from_option(value: Option<String>) -> Self {
+        match value.as_deref() {
+            Some("lazer") => Self::Lazer,
+            _ => Self::Stable,
+        }
+    }
+}
+
 fn get_mtime_ms(path: &Path) -> Result<f64, String> {
     let metadata = fs::metadata(path).map_err(|err| err.to_string())?;
     let modified = metadata.modified().map_err(|err| err.to_string())?;
@@ -164,6 +179,40 @@ fn normalize_metadata(mut metadata: ParsedMetadata) -> ParsedMetadata {
     }
     metadata.mode = metadata.mode.clamp(0, 3);
     metadata
+}
+
+fn resolve_scan_root(dir_path: &str, client: OsuClient) -> PathBuf {
+    let root = PathBuf::from(dir_path);
+    if client == OsuClient::Lazer {
+        let files_root = root.join("files");
+        if files_root.is_dir() {
+            return files_root;
+        }
+    }
+    root
+}
+
+fn is_probable_lazer_osu_file(path: &Path, file_size: u64) -> bool {
+    if file_size == 0 || file_size > 4 * 1024 * 1024 {
+        return false;
+    }
+
+    let Ok(file) = fs::File::open(path) else {
+        return false;
+    };
+
+    let mut reader = BufReader::with_capacity(64, file);
+    let mut buf = [0_u8; 32];
+    let Ok(bytes_read) = reader.read(&mut buf) else {
+        return false;
+    };
+
+    if bytes_read == 0 {
+        return false;
+    }
+
+    let header = String::from_utf8_lossy(&buf[..bytes_read]);
+    header.starts_with("osu file format v")
 }
 
 /// Get the Nth comma-separated field from a line without allocating a Vec.
@@ -507,33 +556,132 @@ fn parse_header_creator_and_version(content: &str) -> (String, String) {
     (creator, version)
 }
 
-/// Discover .osu files and their mtimes in a single pass using WalkDir metadata.
-/// Returns (path_string, mtime_ms) pairs to avoid redundant fs::metadata calls.
-fn find_osu_files_with_mtime(root: &Path) -> Vec<(String, f64)> {
-    let mut results = Vec::with_capacity(4096);
-    for entry in WalkDir::new(root).into_iter().filter_map(Result::ok) {
-        if !entry.file_type().is_file() {
-            continue;
+/// Discover osu beatmap files and their mtimes using WalkDir metadata.
+/// Stable scans use the .osu extension; lazer scans sniff beatmap text files in the hashed store.
+fn find_osu_files_with_mtime(
+    root: &Path,
+    client: OsuClient,
+    status: Option<(&tauri::Window, &str)>,
+) -> Vec<(String, f64)> {
+    match client {
+        OsuClient::Stable => {
+            let mut results = Vec::with_capacity(4096);
+            for entry in WalkDir::new(root).into_iter().filter_map(Result::ok) {
+                if !entry.file_type().is_file() {
+                    continue;
+                }
+
+                let path = entry.path();
+                if !path
+                    .extension()
+                    .and_then(|ext| ext.to_str())
+                    .map(|ext| ext.eq_ignore_ascii_case("osu"))
+                    .unwrap_or(false)
+                {
+                    continue;
+                }
+
+                let metadata = match entry.metadata() {
+                    Ok(metadata) => metadata,
+                    Err(_) => continue,
+                };
+
+                let mtime_ms = metadata
+                    .modified()
+                    .ok()
+                    .map(|t| t.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs_f64() * 1000.0)
+                    .unwrap_or(0.0);
+                results.push((path.to_string_lossy().to_string(), mtime_ms));
+            }
+            results
         }
-        let path = entry.path();
-        let is_osu = path
-            .extension()
-            .and_then(|ext| ext.to_str())
-            .map(|ext| ext.eq_ignore_ascii_case("osu"))
-            .unwrap_or(false);
-        if !is_osu {
-            continue;
+        OsuClient::Lazer => {
+            let mut candidates = Vec::with_capacity(8192);
+            for entry in WalkDir::new(root).into_iter().filter_map(Result::ok) {
+                if !entry.file_type().is_file() {
+                    continue;
+                }
+
+                let metadata = match entry.metadata() {
+                    Ok(metadata) => metadata,
+                    Err(_) => continue,
+                };
+                let mtime_ms = metadata
+                    .modified()
+                    .ok()
+                    .map(|t| t.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs_f64() * 1000.0)
+                    .unwrap_or(0.0);
+
+                candidates.push((
+                    entry.path().to_string_lossy().to_string(),
+                    metadata.len(),
+                    mtime_ms,
+                ));
+            }
+
+            let total_candidates = candidates.len();
+            if let Some((window, dir_path)) = status {
+                emit_scan_status(window, dir_path, "discovering", 0, total_candidates, Some(0));
+            }
+
+            let mut results = Vec::with_capacity((total_candidates / 8).max(256));
+            let mut discovered = 0_usize;
+
+            for (index, (file_path, file_size, mtime_ms)) in candidates.into_iter().enumerate() {
+                if is_probable_lazer_osu_file(Path::new(&file_path), file_size) {
+                    discovered += 1;
+                    results.push((file_path, mtime_ms));
+                }
+
+                let current = index + 1;
+                if let Some((window, dir_path)) = status {
+                    if should_emit_scan_status(current, total_candidates) {
+                        emit_scan_status(
+                            window,
+                            dir_path,
+                            "discovering",
+                            current,
+                            total_candidates,
+                            Some(discovered),
+                        );
+                    }
+                }
+            }
+
+            results
         }
-        // Use entry metadata (already fetched by WalkDir) to get mtime
-        let mtime_ms = entry
-            .metadata()
-            .ok()
-            .and_then(|m| m.modified().ok())
-            .map(|t| t.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs_f64() * 1000.0)
-            .unwrap_or(0.0);
-        results.push((path.to_string_lossy().to_string(), mtime_ms));
     }
-    results
+}
+
+fn count_matching_entries(
+    osu_entries: &[(String, f64)],
+    mappers: &[String],
+    status: Option<(&tauri::Window, &str)>,
+) -> usize {
+    if mappers.is_empty() {
+        return osu_entries.len();
+    }
+
+    let total = osu_entries.len();
+    if let Some((window, dir_path)) = status {
+        emit_scan_status(window, dir_path, "filtering", 0, total, None);
+    }
+
+    let mut matched = 0_usize;
+    for (index, (path, _)) in osu_entries.iter().enumerate() {
+        if file_matches_mapper(path, mappers) {
+            matched += 1;
+        }
+
+        let current = index + 1;
+        if let Some((window, dir_path)) = status {
+            if should_emit_scan_status(current, total) {
+                emit_scan_status(window, dir_path, "filtering", current, total, None);
+            }
+        }
+    }
+
+    matched
 }
 
 /// Process a single .osu file. `mtime_ms` is pre-fetched from WalkDir.
@@ -625,6 +773,39 @@ struct ScanCompleteEvent {
     total_files: usize,
 }
 
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct ScanStatusEvent {
+    directory: String,
+    stage: String,
+    current: usize,
+    total: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    discovered_files: Option<usize>,
+}
+
+#[inline]
+fn should_emit_scan_status(current: usize, total: usize) -> bool {
+    current == total || current == 1 || current % 250 == 0
+}
+
+fn emit_scan_status(
+    window: &tauri::Window,
+    dir_path: &str,
+    stage: &str,
+    current: usize,
+    total: usize,
+    discovered_files: Option<usize>,
+) {
+    let _ = window.emit("scan-status", ScanStatusEvent {
+        directory: dir_path.to_string(),
+        stage: stage.to_string(),
+        current,
+        total,
+        discovered_files,
+    });
+}
+
 /// Quick header-only check to see if a file matches the mapper filter.
 /// Returns true if the file should be included (matches mapper or no mapper filter).
 fn file_matches_mapper(file_path: &str, mappers: &[String]) -> bool {
@@ -646,9 +827,10 @@ fn scan_directory_streaming(
     dir_path: &str,
     mapper_name: Option<String>,
     known_files: Option<HashMap<String, f64>>,
+    client: OsuClient,
     window: &tauri::Window,
 ) {
-    let root = PathBuf::from(dir_path);
+    let root = resolve_scan_root(dir_path, client);
     if !root.exists() || !root.is_dir() {
         let _ = window.emit("scan-complete", ScanCompleteEvent {
             directory: dir_path.to_string(),
@@ -658,7 +840,7 @@ fn scan_directory_streaming(
     }
 
     // Phase 1: Discover all .osu files with their mtimes in one WalkDir pass
-    let osu_entries = find_osu_files_with_mtime(&root);
+    let osu_entries = find_osu_files_with_mtime(&root, client, Some((window, dir_path)));
     if osu_entries.is_empty() {
         let _ = window.emit("scan-complete", ScanCompleteEvent {
             directory: dir_path.to_string(),
@@ -679,14 +861,11 @@ fn scan_directory_streaming(
     let has_mapper = !mappers.is_empty();
 
     // When mapper filter is active, pre-count matching files for accurate progress
-    let total_for_progress = if has_mapper {
-        let mappers_ref = mappers.as_ref();
-        osu_entries.iter()
-            .filter(|(path, _)| file_matches_mapper(path, mappers_ref))
-            .count()
-    } else {
-        osu_entries.len()
-    };
+    let total_for_progress = count_matching_entries(
+        &osu_entries,
+        mappers.as_ref(),
+        if has_mapper { Some((window, dir_path)) } else { None },
+    );
 
     // Shared state for streaming batches
     let batch_counter = Arc::new(Mutex::new(0_usize));
@@ -781,8 +960,9 @@ fn scan_directory_internal(
     dir_path: &str,
     mapper_name: Option<String>,
     known_files: Option<HashMap<String, f64>>,
+    client: OsuClient,
 ) -> ScanDirectoryPayload {
-    let root = PathBuf::from(dir_path);
+    let root = resolve_scan_root(dir_path, client);
     if !root.exists() || !root.is_dir() {
         return ScanDirectoryPayload {
             files: vec![],
@@ -790,7 +970,7 @@ fn scan_directory_internal(
         };
     }
 
-    let osu_entries = find_osu_files_with_mtime(&root);
+    let osu_entries = find_osu_files_with_mtime(&root, client, None);
     if osu_entries.is_empty() {
         return ScanDirectoryPayload {
             files: vec![],
@@ -807,6 +987,7 @@ fn scan_directory_internal(
             .filter(|s| !s.is_empty())
             .collect()
     );
+    let total_for_progress = count_matching_entries(&osu_entries, mappers.as_ref(), None);
 
     let parallelism = std::thread::available_parallelism()
         .map(|count| count.get())
@@ -815,7 +996,7 @@ fn scan_directory_internal(
     let worker_count = max_threads.min(osu_entries.len());
     let chunk_size = osu_entries.len().div_ceil(worker_count);
 
-    let mut files: Vec<ScanFilePayload> = Vec::with_capacity(osu_entries.len());
+    let mut files: Vec<ScanFilePayload> = Vec::with_capacity(total_for_progress);
 
     std::thread::scope(|scope| {
         let mut handles = Vec::with_capacity(worker_count);
@@ -1106,13 +1287,15 @@ async fn scan_directory_osu_files(
     dir_path: String,
     mapper_name: Option<String>,
     known_files: Option<HashMap<String, f64>>,
+    client_type: Option<String>,
 ) -> ScanDirectoryPayload {
     let dir_clone = dir_path.clone();
     let fallback_dir = dir_path.clone();
+    let client = OsuClient::from_option(client_type);
     // Use streaming: emit batches via events, return empty payload
     // The renderer listens for scan-batch and scan-complete events
     tauri::async_runtime::spawn_blocking(move || {
-        scan_directory_streaming(&dir_clone, mapper_name, known_files, &window);
+        scan_directory_streaming(&dir_clone, mapper_name, known_files, client, &window);
     })
     .await
     .ok();
@@ -1127,11 +1310,13 @@ async fn list_directory_osu_files(
     window: tauri::Window,
     dir_path: String,
     mapper_name: Option<String>,
+    client_type: Option<String>,
 ) -> ScanDirectoryPayload {
     let dir_clone = dir_path.clone();
     let fallback_dir = dir_path.clone();
+    let client = OsuClient::from_option(client_type);
     tauri::async_runtime::spawn_blocking(move || {
-        scan_directory_streaming(&dir_clone, mapper_name, Some(HashMap::new()), &window);
+        scan_directory_streaming(&dir_clone, mapper_name, Some(HashMap::new()), client, &window);
     })
     .await
     .ok();
@@ -1142,18 +1327,28 @@ async fn list_directory_osu_files(
 }
 
 #[tauri::command]
-async fn open_mapper_osu_files(window: tauri::Window, mapper_name: String) -> Option<ScanDirectoryPayload> {
+async fn open_mapper_osu_files(
+    window: tauri::Window,
+    mapper_name: String,
+    client_type: Option<String>,
+) -> Option<ScanDirectoryPayload> {
+    let client = OsuClient::from_option(client_type);
     let dir = rfd::FileDialog::new()
         .set_title(format!(
-            "Select the Songs folder to search for maps by \"{}\"",
-            mapper_name
+            "{} to search for maps by \"{}\"",
+            if client == OsuClient::Lazer {
+                "Select the osu!lazer data folder"
+            } else {
+                "Select the Songs folder"
+            },
+            mapper_name,
         ))
         .pick_folder()?;
 
     let dir_path = dir.to_string_lossy().to_string();
     let fallback_dir = dir_path.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        scan_directory_streaming(&dir_path, Some(mapper_name), Some(HashMap::new()), &window);
+        scan_directory_streaming(&dir_path, Some(mapper_name), Some(HashMap::new()), client, &window);
     })
     .await
     .ok();
@@ -1164,15 +1359,23 @@ async fn open_mapper_osu_files(window: tauri::Window, mapper_name: String) -> Op
 }
 
 #[tauri::command]
-async fn open_folder_osu_files(window: tauri::Window) -> Option<ScanDirectoryPayload> {
+async fn open_folder_osu_files(
+    window: tauri::Window,
+    client_type: Option<String>,
+) -> Option<ScanDirectoryPayload> {
+    let client = OsuClient::from_option(client_type);
     let dir = rfd::FileDialog::new()
-        .set_title("Select a songs folder to scan for .osu files")
+        .set_title(if client == OsuClient::Lazer {
+            "Select an osu!lazer data folder to scan for maps"
+        } else {
+            "Select a songs folder to scan for .osu files"
+        })
         .pick_folder()?;
 
     let dir_path = dir.to_string_lossy().to_string();
     let fallback_dir = dir_path.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        scan_directory_streaming(&dir_path, None, Some(HashMap::new()), &window);
+        scan_directory_streaming(&dir_path, None, Some(HashMap::new()), client, &window);
     })
     .await
     .ok();
@@ -1183,9 +1386,15 @@ async fn open_folder_osu_files(window: tauri::Window) -> Option<ScanDirectoryPay
 }
 
 #[tauri::command]
-fn select_directory() -> Option<String> {
-    rfd::FileDialog::new()
-        .set_title("Select Folder")
+fn select_directory(title: Option<String>) -> Option<String> {
+    let dialog = rfd::FileDialog::new();
+    let dialog = if let Some(title) = title {
+        dialog.set_title(title)
+    } else {
+        dialog.set_title("Select Folder")
+    };
+
+    dialog
         .pick_folder()
         .map(|path| path.to_string_lossy().to_string())
 }

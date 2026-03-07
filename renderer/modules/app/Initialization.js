@@ -67,6 +67,96 @@ let modeFilterDropdownMenu = null;
 /** @type {Object|null} Upload dropdown controller */
 let uploadDropdownMenu = null;
 
+/** @type {boolean} Suppress repeated startup songs-dir prompts after a cancel */
+let suppressStartupSongsDirPrompt = false;
+
+const CLIENT_STABLE = 'stable';
+const CLIENT_LAZER = 'lazer';
+
+const getActiveOsuClient = () => Store.settings.osuClient === CLIENT_LAZER ? CLIENT_LAZER : CLIENT_STABLE;
+
+const getClientDirectoryKey = (client = getActiveOsuClient()) => (
+    client === CLIENT_LAZER ? 'lazerDataDir' : 'stableSongsDir'
+);
+
+const getClientDisplayName = (client = getActiveOsuClient()) => (
+    client === CLIENT_LAZER ? 'osu!lazer' : 'osu!stable'
+);
+
+const getClientDirectoryLabel = (client = getActiveOsuClient()) => (
+    client === CLIENT_LAZER ? 'Lazer data directory' : 'Songs directory'
+);
+
+const getClientDirectoryPromptTitle = (client = getActiveOsuClient()) => (
+    client === CLIENT_LAZER ? 'Locate your osu!lazer data folder.' : 'Locate your osu! Songs folder.'
+);
+
+const getClientDirectoryPromptDescription = (client = getActiveOsuClient()) => (
+    client === CLIENT_LAZER
+        ? 'Select the osu!lazer folder that contains client.realm and the files store.'
+        : 'We\'ll use this Songs folder to scan for your maps.'
+);
+
+const getClientImportDescription = (client = getActiveOsuClient()) => (
+    client === CLIENT_LAZER
+        ? 'Choose to import all maps from your lazer data folder, or only maps by a particular mapper.'
+        : 'Choose to import all maps from your Songs folder, or only maps by a particular mapper.'
+);
+
+const getClientDirectoryDialogTitle = (client = getActiveOsuClient()) => (
+    client === CLIENT_LAZER ? 'Select the osu!lazer data folder' : 'Select the osu! Songs folder'
+);
+
+const syncActiveClientDirectory = (allowLegacyFallback = false) => {
+    const client = getActiveOsuClient();
+    const key = getClientDirectoryKey(client);
+    const currentDir = Store.settings[key] || (allowLegacyFallback ? Store.settings.songsDir : null) || null;
+    Store.updateSettings({ songsDir: currentDir });
+    return currentDir;
+};
+
+const setClientDirectory = (dir, client = getActiveOsuClient()) => {
+    const key = getClientDirectoryKey(client);
+    Store.updateSettings({
+        [key]: dir || null,
+        songsDir: dir || null
+    });
+    if (dir) {
+        suppressStartupSongsDirPrompt = false;
+    }
+};
+
+const updateClientUiCopy = (options = {}) => {
+    const { highlightSelection = true } = options;
+    const client = getActiveOsuClient();
+    const songsDirTitle = document.querySelector('#songsDirTitle');
+    const songsDirPromptTitle = document.querySelector('#songsDirPromptTitle');
+    const songsDirPromptDescription = document.querySelector('#songsDirPromptDescription');
+    const songsDirPromptHint = document.querySelector('#songsDirPromptHint');
+    const firstRunPromptDescription = document.querySelector('#firstRunPromptDescription');
+    const selectSongsDirBtn = document.querySelector('#selectSongsDirBtn');
+
+    if (songsDirTitle) songsDirTitle.textContent = getClientDirectoryLabel(client);
+    if (songsDirPromptTitle) songsDirPromptTitle.textContent = getClientDirectoryPromptTitle(client);
+    if (songsDirPromptDescription) songsDirPromptDescription.textContent = getClientDirectoryPromptDescription(client);
+    if (songsDirPromptHint) {
+        songsDirPromptHint.textContent = client === CLIENT_LAZER
+            ? 'Common Windows path: %AppData%\\osu'
+            : 'Common Windows path: %LocalAppData%\\osu!\\Songs';
+    }
+    if (firstRunPromptDescription) firstRunPromptDescription.textContent = getClientImportDescription(client);
+    if (selectSongsDirBtn) {
+        selectSongsDirBtn.dataset.tooltip = `Select ${getClientDisplayName(client)} folder`;
+    }
+
+    document.querySelectorAll('[data-client-option], [data-client]').forEach((button) => {
+        const matchesClient = button.dataset.clientOption === client || button.dataset.client === client;
+        const isActive = highlightSelection && matchesClient;
+        button.classList.toggle('is-active', isActive);
+        button.setAttribute('aria-pressed', String(isActive));
+    });
+};
+
 // ============================================
 // Load Settings
 // ============================================
@@ -94,7 +184,23 @@ export const loadSettings = () => {
                 }
             }
 
+            if (parsed.osuClient !== CLIENT_LAZER) {
+                parsed.osuClient = CLIENT_STABLE;
+            }
+
+            if (parsed.stableSongsDir === undefined) {
+                parsed.stableSongsDir = parsed.osuClient === CLIENT_STABLE ? (parsed.songsDir || null) : null;
+            }
+            if (parsed.lazerDataDir === undefined) {
+                parsed.lazerDataDir = parsed.osuClient === CLIENT_LAZER ? (parsed.songsDir || null) : null;
+            }
+
+            parsed.songsDir = parsed.osuClient === CLIENT_LAZER
+                ? (parsed.lazerDataDir || null)
+                : (parsed.stableSongsDir || null);
+
             Store.updateSettings(parsed);
+            syncActiveClientDirectory(true);
             const height = 170; // Forced to 170px
             Store.updateState('VIRTUAL_ITEM_HEIGHT', height + 12);
             document.documentElement.style.setProperty('--list-item-height', `${height}px`);
@@ -119,6 +225,9 @@ export const loadSettings = () => {
  * Updates all settings-related UI components
  */
 export const applySettings = () => {
+    syncActiveClientDirectory();
+    updateClientUiCopy();
+
     const autoRescan = document.querySelector('#autoRescan');
     const rescanModeMapper = document.querySelector('#rescanModeMapper');
     const rescanModeAll = document.querySelector('#rescanModeAll');
@@ -535,6 +644,7 @@ export const initSettingsPanel = (callbacks = {}) => {
     }
     bindBackdropClose(settingsDialog);
     bindBackdropClose(document.querySelector('#clearAllPrompt'));
+    bindBackdropClose(document.querySelector('#clientPrompt'));
     bindBackdropClose(document.querySelector('#mapperPrompt'));
     bindBackdropClose(document.querySelector('#songsDirPrompt'));
 
@@ -726,16 +836,40 @@ export const initSettingsPanel = (callbacks = {}) => {
     if (selectSongsDirBtn) {
         selectSongsDirBtn.addEventListener('click', async () => {
             if (window.beatmapApi?.selectDirectory) {
-                const dir = await window.beatmapApi.selectDirectory();
+                const dir = await window.beatmapApi.selectDirectory(getClientDirectoryDialogTitle());
                 if (dir) {
-                    Store.updateSettings({ songsDir: dir });
+                    setClientDirectory(dir);
                     Persistence.persistSettings();
                     applySettings();
-                    showNotification('Directory Set', 'Songs folder has been updated.', 'success');
+                    showNotification('Directory Set', `${getClientDisplayName()} folder has been updated.`, 'success');
                 }
             }
         });
     }
+
+    document.querySelectorAll('[data-client-option]').forEach((button) => {
+        button.addEventListener('click', async () => {
+            const nextClient = button.dataset.clientOption === CLIENT_LAZER ? CLIENT_LAZER : CLIENT_STABLE;
+            if (nextClient === getActiveOsuClient()) {
+                applySettings();
+                return;
+            }
+
+            Store.updateSettings({ osuClient: nextClient });
+            const activeDir = syncActiveClientDirectory();
+            Persistence.persistSettings();
+            applySettings();
+
+            Store.setBeatmapItems([]);
+            updateTabCounts();
+            renderFromState();
+            Persistence.saveToStorage({ showNotification });
+
+            if (activeDir && callbacks.refreshLastDirectory) {
+                await callbacks.refreshLastDirectory(callbacks);
+            }
+        });
+    });
 
     // Generic Setting Toggles
     ['autoRescan', 'ignoreStartAndBreaks', 'ignoreGuestDifficulties'].forEach(id => {
@@ -965,7 +1099,7 @@ export const initSettingsPanel = (callbacks = {}) => {
                         }
                     });
 
-                    await window.beatmapApi.scanDirectoryOsuFiles(targetDir, mapper, knownFiles);
+                    await window.beatmapApi.scanDirectoryOsuFiles(targetDir, mapper, knownFiles, getActiveOsuClient());
                     await scanDone;
                 } catch (err) {
                     console.error('Mapper rescan failed:', err);
@@ -993,6 +1127,7 @@ export const initFirstRunWizard = async (callbacks = {}) => {
     if (Store.settings.initialSetupDone) return;
 
     const welcomeDialog = document.querySelector('#welcomePrompt');
+    const clientDialog = document.querySelector('#clientPrompt');
     const firstRunDialog = document.querySelector('#firstRunPrompt');
     const songsDirDialog = document.querySelector('#songsDirPrompt');
     const mapperDialog = document.querySelector('#mapperPrompt');
@@ -1011,6 +1146,38 @@ export const initFirstRunWizard = async (callbacks = {}) => {
         });
     }
 
+    if (clientDialog) {
+        const clientChoice = await new Promise((resolve) => {
+            const stableBtn = document.querySelector('#clientPromptStableBtn');
+            const lazerBtn = document.querySelector('#clientPromptLazerBtn');
+
+            const cleanup = async () => {
+                await closeDialogWithAnimation(clientDialog);
+                stableBtn?.removeEventListener('click', onStable);
+                lazerBtn?.removeEventListener('click', onLazer);
+                clientDialog.removeEventListener('cancel', onCancel);
+            };
+
+            const onStable = async () => { await cleanup(); resolve(CLIENT_STABLE); };
+            const onLazer = async () => { await cleanup(); resolve(CLIENT_LAZER); };
+            const onCancel = async () => { await cleanup(); resolve(null); };
+
+            updateClientUiCopy({ highlightSelection: false });
+            clientDialog.showModal();
+            requestAnimationFrame(() => clientDialog.focus());
+            stableBtn?.addEventListener('click', onStable, { once: true });
+            lazerBtn?.addEventListener('click', onLazer, { once: true });
+            clientDialog.addEventListener('cancel', onCancel, { once: true });
+        });
+
+        if (clientChoice) {
+            Store.updateSettings({ osuClient: clientChoice });
+            syncActiveClientDirectory();
+            Persistence.persistSettings();
+            applySettings();
+        }
+    }
+
     if (firstRunDialog) {
         const choice = await new Promise((resolve) => {
             const allBtn = document.querySelector('#firstRunAllBtn');
@@ -1027,6 +1194,7 @@ export const initFirstRunWizard = async (callbacks = {}) => {
             const onMapper = async () => { await cleanup(); resolve('mapper'); };
             const onCancel = async () => { await cleanup(); resolve(null); };
 
+            updateClientUiCopy();
             firstRunDialog.showModal();
             allBtn?.addEventListener('click', onAll, { once: true });
             mapperBtn?.addEventListener('click', onMapper, { once: true });
@@ -1048,6 +1216,7 @@ export const initFirstRunWizard = async (callbacks = {}) => {
                     songsDirDialog.showModal();
 
                     const onCancel = async () => {
+                        suppressStartupSongsDirPrompt = true;
                         await closeDialogWithAnimation(songsDirDialog);
                         cleanup();
                         resolve();
@@ -1059,11 +1228,13 @@ export const initFirstRunWizard = async (callbacks = {}) => {
 
                         // Small delay for focus/animation
                         await new Promise(r => setTimeout(r, 400));
-                        const dir = await window.beatmapApi.selectDirectory();
+                        const dir = await window.beatmapApi.selectDirectory(getClientDirectoryDialogTitle());
                         if (dir) {
-                            Store.updateSettings({ songsDir: dir });
+                            setClientDirectory(dir);
                             Persistence.persistSettings();
                             applySettings();
+                        } else {
+                            suppressStartupSongsDirPrompt = true;
                         }
                         cleanup();
                         resolve();
@@ -1098,6 +1269,7 @@ export const initFirstRunWizard = async (callbacks = {}) => {
                     songsDirDialog.showModal();
 
                     const onCancel = async () => {
+                        suppressStartupSongsDirPrompt = true;
                         await closeDialogWithAnimation(songsDirDialog);
                         cleanup();
                         resolve();
@@ -1109,11 +1281,13 @@ export const initFirstRunWizard = async (callbacks = {}) => {
 
                         // Small delay for focus/animation
                         await new Promise(r => setTimeout(r, 400));
-                        const dir = await window.beatmapApi.selectDirectory();
+                        const dir = await window.beatmapApi.selectDirectory(getClientDirectoryDialogTitle());
                         if (dir) {
-                            Store.updateSettings({ songsDir: dir });
+                            setClientDirectory(dir);
                             Persistence.persistSettings();
                             applySettings();
+                        } else {
+                            suppressStartupSongsDirPrompt = true;
                         }
                         cleanup();
                         resolve();
@@ -1653,7 +1827,7 @@ export const init = async (callbacks = {}) => {
         if (!Store.settings.rescanMapperName && Store.settings.initialImportChoice !== 'all') {
             await promptForMapperName();
         }
-        if (!Store.settings.songsDir && window.beatmapApi?.selectDirectory) {
+        if (!Store.settings.songsDir && !suppressStartupSongsDirPrompt && window.beatmapApi?.selectDirectory) {
             await promptForSongsDir();
         }
 
@@ -1771,6 +1945,7 @@ async function promptForSongsDir() {
 
     if (!dialog) return;
 
+    updateClientUiCopy();
     dialog.showModal();
 
     return new Promise((resolve) => {
@@ -1782,18 +1957,23 @@ async function promptForSongsDir() {
             resolve();
         };
 
-        const onCancel = async () => { await cleanup(); };
+        const onCancel = async () => {
+            suppressStartupSongsDirPrompt = true;
+            await cleanup();
+        };
         const onSubmit = async (event) => {
             event.preventDefault();
             await cleanup();
 
             // Small delay before opening native explorer for focus/animation reasons
             await new Promise(r => setTimeout(r, 400));
-            const dir = await window.beatmapApi.selectDirectory();
+            const dir = await window.beatmapApi.selectDirectory(getClientDirectoryDialogTitle());
             if (dir) {
-                Store.updateSettings({ songsDir: dir });
+                setClientDirectory(dir);
                 Persistence.persistSettings();
                 applySettings();
+            } else {
+                suppressStartupSongsDirPrompt = true;
             }
         };
 

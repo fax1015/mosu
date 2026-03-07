@@ -132,7 +132,6 @@ export const AudioController = {
             }
         }
 
-        // Seek immediately if we have duration info
         if (percentage !== null && item.durationMs) {
             this.audio.currentTime = percentage * (item.durationMs / 1000);
         } else if (this.audio.currentTime === 0 && item.previewTime > 0) {

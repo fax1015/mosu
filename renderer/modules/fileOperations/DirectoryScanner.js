@@ -26,6 +26,8 @@ import { closeDialogWithAnimation as defaultCloseDialogWithAnimation } from '../
 /** @type {string|null} Last scanned directory path */
 let lastScannedDirectory = localStorage.getItem('lastScannedDirectory') || null;
 
+const getActiveOsuClient = () => settings?.osuClient === 'lazer' ? 'lazer' : 'stable';
+
 // ============================================
 // Directory Getters/Setters
 // ============================================
@@ -187,7 +189,7 @@ export async function refreshLastDirectory(callbacks = {}) {
 
         // Start streaming scan — results arrive via scan-batch events
         const scanDone = startStreamingScan('directory', { callbacks });
-        await beatmapApi.scanDirectoryOsuFiles(targetDir, mapperName, knownFiles);
+        await beatmapApi.scanDirectoryOsuFiles(targetDir, mapperName, knownFiles, getActiveOsuClient());
         await scanDone;
 
         // Success animation
@@ -326,7 +328,7 @@ export async function loadBeatmapsByMapper(mapperName, callbacks = {}) {
     }
 
     const scanDone = startStreamingScan('mapper', { callbacks });
-    const result = await beatmapApi.openMapperOsuFiles(mapperName);
+    const result = await beatmapApi.openMapperOsuFiles(mapperName, getActiveOsuClient());
 
     if (!result) {
         // User cancelled folder picker — clean up streaming state
@@ -351,7 +353,7 @@ export async function loadBeatmapsFromFolder(callbacks = {}) {
 
     const { showNotification } = callbacks;
     const scanDone = startStreamingScan('folder', { callbacks });
-    const result = await beatmapApi.openFolderOsuFiles();
+    const result = await beatmapApi.openFolderOsuFiles(getActiveOsuClient());
 
     if (!result) {
         // User cancelled folder picker

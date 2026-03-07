@@ -56,17 +56,17 @@
 
   window.beatmapApi = window.beatmapApi || {
     openOsuFile: () => invoke('open_osu_file'),
-    openMapperOsuFiles: (mapperName) => invoke('open_mapper_osu_files', { mapperName }),
-    openFolderOsuFiles: () => invoke('open_folder_osu_files'),
+    openMapperOsuFiles: (mapperName, clientType) => invoke('open_mapper_osu_files', { mapperName, clientType }),
+    openFolderOsuFiles: (clientType) => invoke('open_folder_osu_files', { clientType }),
     readImage: (filePath) => invoke('read_image_file', { filePath }),
     readBinary: async (filePath) => toBinary(await invoke('read_binary_file', { filePath })),
     readOsuFile: (filePath) => invoke('read_osu_file', { filePath }),
     statFile: (filePath) => invoke('stat_file', { filePath }),
-    scanDirectoryOsuFiles: (dirPath, mapperName, knownFiles) =>
-      invoke('scan_directory_osu_files', { dirPath, mapperName, knownFiles }),
-    listDirectoryOsuFiles: (dirPath, mapperName) =>
-      invoke('list_directory_osu_files', { dirPath, mapperName }),
-    selectDirectory: () => invoke('select_directory'),
+    scanDirectoryOsuFiles: (dirPath, mapperName, knownFiles, clientType) =>
+      invoke('scan_directory_osu_files', { dirPath, mapperName, knownFiles, clientType }),
+    listDirectoryOsuFiles: (dirPath, mapperName, clientType) =>
+      invoke('list_directory_osu_files', { dirPath, mapperName, clientType }),
+    selectDirectory: (title) => invoke('select_directory', { title }),
     showItemInFolder: (filePath) => invoke('show_item_in_folder', { filePath }),
     openInTextEditor: (filePath) => invoke('open_in_text_editor', { filePath }),
     convertFileSrc: (filePath) => convertFileSrc(filePath),

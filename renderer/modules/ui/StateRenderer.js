@@ -50,8 +50,9 @@ export const setLoading = (isLoading) => {
  * Update progress bar
  * @param {number} current - Current progress
  * @param {number} total - Total items
+ * @param {string|null} [labelText] - Optional status label override
  */
-export const updateProgress = (current, total) => {
+export const updateProgress = (current, total, labelText = null) => {
     const progressSection = document.querySelector('#loadingProgress');
     const fill = document.querySelector('#progressBarFill');
     const label = document.querySelector('#progressLabel');
@@ -61,7 +62,7 @@ export const updateProgress = (current, total) => {
     progressSection.classList.remove('is-hidden');
     const pct = total > 0 ? (current / total) * 100 : 0;
     fill.style.width = `${pct}%`;
-    label.textContent = `Processing ${current} / ${total} files...`;
+    label.textContent = labelText || `Processing ${current} / ${total} files...`;
 };
 
 // ============================================

@@ -22,6 +22,27 @@ import {
     scheduleStarRatingCalculation
 } from '../services/BackgroundProcessor.js';
 
+const getActiveOsuClient = (settingsObj = settings) => settingsObj?.osuClient === 'lazer' ? 'lazer' : 'stable';
+
+const extractBeatmapSetIdNumber = (beatmapSetID) => {
+    const raw = String(beatmapSetID || '').trim();
+    if (!raw) {
+        return '';
+    }
+
+    const urlMatch = raw.match(/beatmapsets\/(\d+)/i);
+    if (urlMatch?.[1]) {
+        return urlMatch[1];
+    }
+
+    return /^\d+$/.test(raw) ? raw : '';
+};
+
+const buildLazerCoverUrl = (beatmapSetID) => {
+    const id = extractBeatmapSetIdNumber(beatmapSetID);
+    return id ? `https://assets.ppy.sh/beatmaps/${id}/covers/cover.jpg` : '';
+};
+
 // ============================================
 // Item Building from Content
 // ============================================
@@ -68,12 +89,13 @@ export async function buildItemFromContent(filePath, content, stat, existing) {
  */
 export function processWorkerResult(file, existing) {
     const { metadata, hitStarts, hitEnds, breakPeriods, bookmarks, filePath, stat } = file || {};
+    const isLazerClient = getActiveOsuClient() === 'lazer';
 
     let coverUrl = '';
     let coverPath = '';
     let highlights = [];
 
-    if (metadata?.background) {
+    if (!isLazerClient && metadata?.background) {
         const folderPath = getDirectoryPath(filePath || '');
         coverPath = `${folderPath}${metadata.background}`;
         if (existing?.coverPath === coverPath && existing?.coverUrl) {
@@ -82,6 +104,8 @@ export function processWorkerResult(file, existing) {
             // Generate asset URL instantly — no IPC needed
             coverUrl = beatmapApi.convertFileSrc(coverPath);
         }
+    } else if (isLazerClient) {
+        coverUrl = existing?.coverUrl || buildLazerCoverUrl(metadata?.beatmapSetID);
     }
 
     const maxObjectTime = arrayMax(hitEnds);
@@ -99,10 +123,11 @@ export function processWorkerResult(file, existing) {
     const fallbackDuration = maxTime > 0 ? maxTime + 1000 : 0;
 
     // Preserve existing duration if audio hasn't changed
-    let durationMs = (existing && existing.audio === metadata.audio)
+    const resolvedAudio = isLazerClient ? '' : (metadata?.audio || '');
+    let durationMs = (existing && existing.audio === resolvedAudio)
         ? existing.durationMs
         : null;
-    const progressPending = Boolean(metadata.audio) && typeof durationMs !== 'number';
+    const progressPending = !isLazerClient && Boolean(resolvedAudio) && typeof durationMs !== 'number';
 
     const totalDuration = durationMs || fallbackDuration;
     if (totalDuration) {
@@ -114,6 +139,7 @@ export function processWorkerResult(file, existing) {
 
     const item = {
         ...metadata,
+        audio: resolvedAudio,
         durationMs,
         progressPending,
         deadline: existing?.deadline ?? null,
@@ -131,7 +157,7 @@ export function processWorkerResult(file, existing) {
     };
 
     // Schedule audio analysis if duration is missing
-    if (!durationMs && metadata.audio && filePath) {
+    if (!durationMs && resolvedAudio && filePath) {
         // Store raw hit object/break timestamps temporarily so we can recalculate
         // accurate normalized highlights once the real audio duration is known.
         item.rawTimestamps = { hitStarts, hitEnds, breakPeriods, bookmarks };
@@ -176,6 +202,8 @@ export function buildItemFromCache(cached, settingsObj = settings) {
 
     // Recalculate progress from highlights
     const progress = computeProgress(highlights, settingsObj);
+    const isLazerClient = getActiveOsuClient(settingsObj) === 'lazer';
+    const restoredCoverUrl = isLazerClient ? buildLazerCoverUrl(cached.beatmapSetID) : '';
 
     // Build item with defaults for missing fields
     const item = {
@@ -189,10 +217,12 @@ export function buildItemFromCache(cached, settingsObj = settings) {
         version: cached.version,
         beatmapSetID: cached.beatmapSetID || '-1',
         mode: Number.isFinite(cached.mode) ? Math.min(Math.max(cached.mode, 0), 3) : 0,
-        audio: cached.audio || '',
+        audio: isLazerClient ? '' : (cached.audio || ''),
         background: cached.background || '',
         durationMs: (typeof cached.durationMs === 'number') ? cached.durationMs : null,
-        progressPending: Boolean(cached.progressPending) || (Boolean(cached.audio) && typeof cached.durationMs !== 'number'),
+        progressPending: isLazerClient
+            ? false
+            : (Boolean(cached.progressPending) || (Boolean(cached.audio) && typeof cached.durationMs !== 'number')),
         previewTime: cached.previewTime ?? -1,
         deadline: (typeof cached.deadline === 'number' || cached.deadline === null)
             ? cached.deadline
@@ -206,8 +236,8 @@ export function buildItemFromCache(cached, settingsObj = settings) {
         progress,
         dateAdded: cached.dateAdded || Date.now(),
         dateModified: cached.dateModified || 0,
-        coverUrl: '',
-        coverPath: cached.coverPath || '',
+        coverUrl: restoredCoverUrl,
+        coverPath: isLazerClient ? '' : (cached.coverPath || ''),
     };
 
     // Regenerate cover URL if cover path exists

@@ -85,12 +85,15 @@ export let saveTimer = null;
 
 /** @type {Object} Application settings */
 export let settings = {
+    osuClient: 'stable',
     autoRescan: false,
     rescanMode: 'mapper',
     rescanMapperName: '',
     mapperAliases: [],
     ignoredAliases: [],
     songsDir: null,
+    stableSongsDir: null,
+    lazerDataDir: null,
     ignoreStartAndBreaks: false,
     ignoreGuestDifficulties: false,
     volume: 0.5,

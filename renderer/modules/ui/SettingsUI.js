@@ -6,6 +6,8 @@
 import { getStarRatingColor } from '../utils/Helpers.js';
 import { appInfo } from '../bridge/Tauri.js';
 
+const getActiveOsuClient = (settings) => settings?.osuClient === 'lazer' ? 'lazer' : 'stable';
+
 // ============================================
 // Sort UI
 // ============================================
@@ -277,6 +279,7 @@ export const updateListHeightUI = (height) => {
  * @param {Function} [options.getEmbedSyncUrl] - Function to get embed sync URL
  */
 export const updateSettingsUI = (settings, options = {}) => {
+    const activeClient = getActiveOsuClient(settings);
     const autoRescan = document.querySelector('#autoRescan');
     const rescanModeMapper = document.querySelector('#rescanModeMapper');
     const rescanModeAll = document.querySelector('#rescanModeAll');
@@ -286,6 +289,31 @@ export const updateSettingsUI = (settings, options = {}) => {
     const mapperRescanConfig = document.querySelector('#mapperRescanConfig');
     const linkedAliasesContainer = document.querySelector('#linkedAliasesContainer');
     const linkedAliasesList = document.querySelector('#linkedAliasesList');
+    const songsDirTitle = document.querySelector('#songsDirTitle');
+    const songsDirPromptTitle = document.querySelector('#songsDirPromptTitle');
+    const songsDirPromptDescription = document.querySelector('#songsDirPromptDescription');
+    const firstRunPromptDescription = document.querySelector('#firstRunPromptDescription');
+    const selectSongsDirBtn = document.querySelector('#selectSongsDirBtn');
+
+    if (songsDirTitle) songsDirTitle.textContent = activeClient === 'lazer' ? 'Lazer data directory' : 'Songs directory';
+    if (songsDirPromptTitle) songsDirPromptTitle.textContent = activeClient === 'lazer'
+        ? 'Locate your osu!lazer data folder.'
+        : 'Locate your osu! Songs folder.';
+    if (songsDirPromptDescription) songsDirPromptDescription.textContent = activeClient === 'lazer'
+        ? 'Select the osu!lazer folder that contains client.realm and the files store.'
+        : 'We\'ll use this Songs folder to scan for your maps.';
+    if (firstRunPromptDescription) firstRunPromptDescription.textContent = activeClient === 'lazer'
+        ? 'Choose to import all maps from your lazer data folder, or only maps by a particular mapper.'
+        : 'Choose to import all maps from your Songs folder, or only maps by a particular mapper.';
+    if (selectSongsDirBtn) {
+        selectSongsDirBtn.dataset.tooltip = activeClient === 'lazer' ? 'Select osu!lazer folder' : 'Select songs folder';
+    }
+
+    document.querySelectorAll('[data-client-option], [data-client]').forEach((button) => {
+        const isActive = button.dataset.clientOption === activeClient || button.dataset.client === activeClient;
+        button.classList.toggle('is-active', isActive);
+        button.setAttribute('aria-pressed', String(isActive));
+    });
 
     if (autoRescan) autoRescan.checked = !!settings.autoRescan;
 
