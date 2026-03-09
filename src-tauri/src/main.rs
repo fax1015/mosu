@@ -1,6 +1,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use base64::Engine;
+use lofty::file::FileType;
+use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -44,6 +46,8 @@ struct ParsedMetadata {
     mode: i32,
     audio: String,
     background: String,
+    resolved_audio_path: String,
+    resolved_background_path: String,
     #[serde(rename = "beatmapSetID")]
     beatmap_set_id: String,
     preview_time: i32,
@@ -136,6 +140,64 @@ impl OsuClient {
     }
 }
 
+#[derive(Debug, Clone, Deserialize)]
+struct SidecarResolvedEntry {
+    h: String,
+    a: Option<String>,
+    b: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct SidecarManifestFileEntry {
+    n: String,
+    p: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct SidecarManifestEntry {
+    h: String,
+    o: Option<String>,
+    f: Vec<SidecarManifestFileEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LazerSessionFileEntry {
+    relative_path: String,
+    source_path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LazerSessionState {
+    source_file_path: String,
+    unpacked_osu_relative_path: Option<String>,
+    files: Vec<LazerSessionFileEntry>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LazerPreparedSession {
+    session_dir: String,
+    unpacked_dir: String,
+    unpacked_osu_path: Option<String>,
+}
+
+/// Pre-resolved audio/background paths for all beatmaps, keyed by beatmap hash.
+#[derive(Debug, Clone)]
+struct LazerResolvedAssets {
+    map: HashMap<String, (Option<String>, Option<String>)>,
+}
+
+#[derive(Debug, Clone)]
+struct CachedLazerResolver {
+    assets: Arc<LazerResolvedAssets>,
+    realm_mtime_ms: f64,
+}
+
+static LAZER_RESOLVER_CACHE: OnceLock<Mutex<HashMap<String, CachedLazerResolver>>> = OnceLock::new();
+const LAZER_SESSION_META_FILE: &str = ".mosu-lazer-session.json";
+
 fn get_mtime_ms(path: &Path) -> Result<f64, String> {
     let metadata = fs::metadata(path).map_err(|err| err.to_string())?;
     let modified = metadata.modified().map_err(|err| err.to_string())?;
@@ -158,6 +220,54 @@ fn get_mime_type(path: &Path) -> &'static str {
         "gif" => "image/gif",
         "webp" => "image/webp",
         _ => "application/octet-stream",
+    }
+}
+
+fn sniff_audio_mime_type(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.len() >= 3 && bytes[0] == 0x49 && bytes[1] == 0x44 && bytes[2] == 0x33 {
+        return Some("audio/mpeg");
+    }
+    if bytes.len() >= 2 && bytes[0] == 0xff && (bytes[1] & 0xf6) == 0xf0 {
+        return Some("audio/aac");
+    }
+    if bytes.len() >= 2 && bytes[0] == 0xff && (bytes[1] & 0xe0) == 0xe0 {
+        return Some("audio/mpeg");
+    }
+    if bytes.len() >= 4 && bytes[0] == 0x4f && bytes[1] == 0x67 && bytes[2] == 0x67 && bytes[3] == 0x53 {
+        return Some("audio/ogg");
+    }
+    if bytes.len() >= 4 && bytes[0] == 0x66 && bytes[1] == 0x4c && bytes[2] == 0x61 && bytes[3] == 0x43 {
+        return Some("audio/flac");
+    }
+    if bytes.len() >= 12
+        && bytes[0] == 0x52 && bytes[1] == 0x49 && bytes[2] == 0x46 && bytes[3] == 0x46
+        && bytes[8] == 0x57 && bytes[9] == 0x41 && bytes[10] == 0x56 && bytes[11] == 0x45
+    {
+        return Some("audio/wav");
+    }
+    if bytes.len() >= 12
+        && bytes[4] == 0x66 && bytes[5] == 0x74 && bytes[6] == 0x79 && bytes[7] == 0x70
+    {
+        return Some("audio/mp4");
+    }
+    None
+}
+
+fn audio_mime_type_from_hint(file_name_hint: Option<&str>) -> Option<&'static str> {
+    match file_name_hint
+        .and_then(|name| Path::new(name).extension())
+        .and_then(|ext| ext.to_str())
+        .map(|ext| ext.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("mp3") => Some("audio/mpeg"),
+        Some("ogg") | Some("oga") | Some("opus") => Some("audio/ogg"),
+        Some("wav") => Some("audio/wav"),
+        Some("flac") => Some("audio/flac"),
+        Some("m4a") | Some("mp4") => Some("audio/mp4"),
+        Some("aac") => Some("audio/aac"),
+        Some("webm") => Some("audio/webm"),
+        _ => None,
     }
 }
 
@@ -190,6 +300,203 @@ fn resolve_scan_root(dir_path: &str, client: OsuClient) -> PathBuf {
         }
     }
     root
+}
+
+fn resolve_lazer_data_root(dir_path: &str) -> Option<PathBuf> {
+    let root = PathBuf::from(dir_path);
+    if root.join("client.realm").is_file() {
+        return Some(root);
+    }
+
+    if root
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.eq_ignore_ascii_case("files"))
+    {
+        let parent = root.parent()?;
+        if parent.join("client.realm").is_file() {
+            return Some(parent.to_path_buf());
+        }
+    }
+
+    None
+}
+
+fn path_cache_key(path: &Path) -> String {
+    fs::canonicalize(path)
+        .unwrap_or_else(|_| path.to_path_buf())
+        .to_string_lossy()
+        .to_ascii_lowercase()
+}
+
+fn find_realm_resolver_exe() -> Option<PathBuf> {
+    // Look for the sidecar next to the current executable
+    if let Ok(exe) = std::env::current_exe() {
+        let dir = exe.parent()?;
+        // Check alongside the app binary
+        let candidate = dir.join("realm-resolver").with_extension(std::env::consts::EXE_EXTENSION);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+        // Check in sidecar publish directory (development)
+        let dev_candidate = dir
+            .ancestors()
+            .find(|p| p.join("src-tauri").is_dir())
+            .map(|root| root.join("src-tauri/sidecar/realm-resolver/publish/realm-resolver").with_extension(std::env::consts::EXE_EXTENSION));
+        if let Some(path) = dev_candidate {
+            if path.is_file() {
+                return Some(path);
+            }
+        }
+    }
+    None
+}
+
+fn build_lazer_resolver(data_root: &Path) -> Result<Arc<LazerResolvedAssets>, String> {
+    let exe = find_realm_resolver_exe()
+        .ok_or_else(|| "realm-resolver sidecar not found".to_string())?;
+
+    let output = Command::new(&exe)
+        .arg(data_root.as_os_str())
+        .arg("--resolve-all")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .map_err(|err| format!("failed to run realm-resolver: {err}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("realm-resolver failed: {stderr}"));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut map = HashMap::new();
+    for line in stdout.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        if let Ok(entry) = serde_json::from_str::<SidecarResolvedEntry>(line) {
+            map.insert(entry.h, (entry.a, entry.b));
+        }
+    }
+
+    Ok(Arc::new(LazerResolvedAssets { map }))
+}
+
+fn get_lazer_resolver(dir_path: &str) -> Result<Option<Arc<LazerResolvedAssets>>, String> {
+    let Some(data_root) = resolve_lazer_data_root(dir_path) else {
+        return Ok(None);
+    };
+
+    let realm_path = data_root.join("client.realm");
+    let realm_mtime_ms = get_mtime_ms(&realm_path)?;
+    let cache_key = path_cache_key(&data_root);
+    let cache = LAZER_RESOLVER_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+
+    {
+        let cache_guard = cache.lock().unwrap();
+        if let Some(cached) = cache_guard.get(&cache_key) {
+            if (cached.realm_mtime_ms - realm_mtime_ms).abs() < 0.5 {
+                return Ok(Some(Arc::clone(&cached.assets)));
+            }
+        }
+    }
+
+    let resolver = build_lazer_resolver(&data_root)?;
+
+    let mut cache_guard = cache.lock().unwrap();
+    cache_guard.insert(
+        cache_key,
+        CachedLazerResolver {
+            assets: Arc::clone(&resolver),
+            realm_mtime_ms,
+        },
+    );
+
+    Ok(Some(resolver))
+}
+
+fn get_lazer_manifest(data_root: &Path, beatmap_hash: &str) -> Result<SidecarManifestEntry, String> {
+    let exe = find_realm_resolver_exe()
+        .ok_or_else(|| "realm-resolver sidecar not found".to_string())?;
+
+    let output = Command::new(&exe)
+        .arg(data_root.as_os_str())
+        .arg("--manifest")
+        .arg(beatmap_hash)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .map_err(|err| format!("failed to run realm-resolver: {err}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("realm-resolver failed: {stderr}"));
+    }
+
+    serde_json::from_slice::<SidecarManifestEntry>(&output.stdout)
+        .map_err(|err| format!("failed to parse realm-resolver manifest: {err}"))
+}
+
+fn normalize_relative_session_path(name: &str) -> Option<PathBuf> {
+    let normalized = name.replace('\\', "/");
+    let mut out = PathBuf::new();
+
+    for component in Path::new(&normalized).components() {
+        match component {
+            std::path::Component::Normal(part) => out.push(part),
+            std::path::Component::CurDir => {}
+            _ => {}
+        }
+    }
+
+    if out.as_os_str().is_empty() {
+        None
+    } else {
+        Some(out)
+    }
+}
+
+fn create_lazer_session_dir(beatmap_hash: &str) -> Result<PathBuf, String> {
+    let base = std::env::temp_dir().join("mosu-lazer-sessions");
+    fs::create_dir_all(&base).map_err(|err| err.to_string())?;
+
+    let stamp = std::time::SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_else(|_| Duration::from_secs(0))
+        .as_millis();
+    let safe_hash = beatmap_hash
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .take(16)
+        .collect::<String>();
+    let dir = base.join(format!(
+        "{}-{}",
+        if safe_hash.is_empty() { "map" } else { &safe_hash },
+        stamp
+    ));
+    fs::create_dir_all(&dir).map_err(|err| err.to_string())?;
+    Ok(dir)
+}
+
+fn write_lazer_session_state(session_dir: &Path, state: &LazerSessionState) -> Result<(), String> {
+    let meta_path = session_dir.join(LAZER_SESSION_META_FILE);
+    let json = serde_json::to_vec_pretty(state).map_err(|err| err.to_string())?;
+    fs::write(meta_path, json).map_err(|err| err.to_string())
+}
+
+fn read_lazer_session_state(session_dir: &Path) -> Result<LazerSessionState, String> {
+    let meta_path = session_dir.join(LAZER_SESSION_META_FILE);
+    let bytes = fs::read(meta_path).map_err(|err| err.to_string())?;
+    serde_json::from_slice::<LazerSessionState>(&bytes).map_err(|err| err.to_string())
+}
+
+fn beatmap_hash_from_lazer_path(file_path: &str) -> Option<String> {
+    Path::new(file_path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(|name| name.trim().to_ascii_lowercase())
+        .filter(|name| !name.is_empty())
 }
 
 fn is_probable_lazer_osu_file(path: &Path, file_size: u64) -> bool {
@@ -690,6 +997,7 @@ fn scan_single_osu_file(
     mtime_ms: f64,
     known: &HashMap<String, f64>,
     mappers: &[String],
+    lazer_resolver: Option<&LazerResolvedAssets>,
 ) -> Option<ScanFilePayload> {
     let has_mapper = !mappers.is_empty();
 
@@ -735,7 +1043,20 @@ fn scan_single_osu_file(
     let mut content = String::with_capacity(32768);
     reader.read_to_string(&mut content).ok()?;
 
-    let parsed = parse_osu_content(&content);
+    let mut parsed = parse_osu_content(&content);
+
+    if let (Some(resolver), Some(beatmap_hash)) =
+        (lazer_resolver, beatmap_hash_from_lazer_path(file_path))
+    {
+        if let Some((audio_path, bg_path)) = resolver.map.get(&beatmap_hash) {
+            if let Some(audio) = audio_path {
+                parsed.metadata.resolved_audio_path = audio.clone();
+            }
+            if let Some(bg) = bg_path {
+                parsed.metadata.resolved_background_path = bg.clone();
+            }
+        }
+    }
 
     if has_mapper {
         let creator = parsed.metadata.creator.to_ascii_lowercase();
@@ -859,6 +1180,18 @@ fn scan_directory_streaming(
             .collect()
     );
     let has_mapper = !mappers.is_empty();
+    let lazer_resolver = if client == OsuClient::Lazer {
+        emit_scan_status(window, dir_path, "resolving-media", 0, 0, None);
+        match get_lazer_resolver(dir_path) {
+            Ok(resolver) => resolver,
+            Err(err) => {
+                eprintln!("failed to resolve lazer media from {dir_path}: {err}");
+                None
+            }
+        }
+    } else {
+        None
+    };
 
     // When mapper filter is active, pre-count matching files for accurate progress
     let total_for_progress = count_matching_entries(
@@ -888,6 +1221,7 @@ fn scan_directory_streaming(
             let chunk_entries: Vec<_> = chunk.to_vec();
             let known = Arc::clone(&known);
             let mappers = Arc::clone(&mappers);
+            let lazer_resolver = lazer_resolver.clone();
             let batch_counter = Arc::clone(&batch_counter);
             let total_emitted = Arc::clone(&total_emitted);
             let total_for_progress = Arc::clone(&total_for_progress_arc);
@@ -901,6 +1235,7 @@ fn scan_directory_streaming(
                         *mtime_ms,
                         &known,
                         mappers.as_ref(),
+                        lazer_resolver.as_deref(),
                     ) {
                         local_batch.push(payload);
                     }
@@ -987,6 +1322,17 @@ fn scan_directory_internal(
             .filter(|s| !s.is_empty())
             .collect()
     );
+    let lazer_resolver = if client == OsuClient::Lazer {
+        match get_lazer_resolver(dir_path) {
+            Ok(resolver) => resolver,
+            Err(err) => {
+                eprintln!("failed to resolve lazer media from {dir_path}: {err}");
+                None
+            }
+        }
+    } else {
+        None
+    };
     let total_for_progress = count_matching_entries(&osu_entries, mappers.as_ref(), None);
 
     let parallelism = std::thread::available_parallelism()
@@ -1005,6 +1351,7 @@ fn scan_directory_internal(
             let chunk_entries: Vec<_> = chunk.to_vec();
             let known = Arc::clone(&known);
             let mappers = Arc::clone(&mappers);
+            let lazer_resolver = lazer_resolver.clone();
 
             handles.push(scope.spawn(move || {
                 let mut out = Vec::with_capacity(chunk_entries.len());
@@ -1014,6 +1361,7 @@ fn scan_directory_internal(
                         *mtime_ms,
                         &known,
                         mappers.as_ref(),
+                        lazer_resolver.as_deref(),
                     ) {
                         out.push(payload);
                     }
@@ -1177,6 +1525,16 @@ fn read_binary_file(file_path: String) -> Option<Vec<u8>> {
 }
 
 #[tauri::command]
+fn read_audio_file(file_path: String, file_name_hint: Option<String>) -> Option<String> {
+    let bytes = fs::read(&file_path).ok()?;
+    let mime = sniff_audio_mime_type(&bytes)
+        .or_else(|| audio_mime_type_from_hint(file_name_hint.as_deref()))
+        .unwrap_or("application/octet-stream");
+    let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
+    Some(format!("data:{};base64,{}", mime, encoded))
+}
+
+#[tauri::command]
 fn read_osu_file(file_path: String) -> Option<OsuFilePayload> {
     let content = fs::read_to_string(&file_path).ok()?;
     let mtime_ms = get_mtime_ms(Path::new(&file_path)).ok()?;
@@ -1188,11 +1546,41 @@ fn read_osu_file(file_path: String) -> Option<OsuFilePayload> {
 }
 
 #[tauri::command]
-fn get_audio_duration(file_path: String) -> Option<f64> {
+fn get_audio_duration(file_path: String, file_name_hint: Option<String>) -> Option<f64> {
     use lofty::probe::Probe;
     use lofty::prelude::*;
+    use std::fs::File;
+    use std::io::BufReader;
+
     let path = Path::new(&file_path);
-    let tagged_file = Probe::open(path).ok()?.read().ok()?;
+    let hinted_type = file_name_hint
+        .as_deref()
+        .and_then(|name| Path::new(name).extension())
+        .and_then(|ext| ext.to_str())
+        .and_then(FileType::from_ext);
+
+    let tagged_file = if let Ok(probe) = Probe::open(path) {
+        match probe.read() {
+            Ok(tagged_file) => tagged_file,
+            Err(_) => {
+                let file = File::open(path).ok()?;
+                let reader = BufReader::new(file);
+                if let Some(file_type) = hinted_type {
+                    Probe::with_file_type(reader, file_type).read().ok()?
+                } else {
+                    Probe::new(reader).guess_file_type().ok()?.read().ok()?
+                }
+            }
+        }
+    } else {
+        let file = File::open(path).ok()?;
+        let reader = BufReader::new(file);
+        if let Some(file_type) = hinted_type {
+            Probe::with_file_type(reader, file_type).read().ok()?
+        } else {
+            Probe::new(reader).guess_file_type().ok()?.read().ok()?
+        }
+    };
     let duration = tagged_file.properties().duration();
     Some(duration.as_millis() as f64)
 }
@@ -1218,6 +1606,109 @@ async fn calculate_star_rating(file_path: String) -> Option<f64> {
 fn stat_file(file_path: String) -> Option<FileStatPayload> {
     let mtime_ms = get_mtime_ms(Path::new(&file_path)).ok()?;
     Some(FileStatPayload { mtime_ms })
+}
+
+#[tauri::command]
+fn prepare_lazer_map_session(file_path: String, data_root: String) -> Result<LazerPreparedSession, String> {
+    let data_root_path = resolve_lazer_data_root(&data_root)
+        .ok_or_else(|| "osu!lazer data folder not found".to_string())?;
+    let beatmap_hash = beatmap_hash_from_lazer_path(&file_path)
+        .ok_or_else(|| "failed to derive lazer beatmap hash".to_string())?;
+    let manifest = get_lazer_manifest(&data_root_path, &beatmap_hash)?;
+
+    if !manifest.h.eq_ignore_ascii_case(&beatmap_hash) {
+        return Err("realm-resolver returned a mismatched beatmap manifest".to_string());
+    }
+
+    if manifest.f.is_empty() {
+        return Err("no files available to unpack for this beatmap set".to_string());
+    }
+
+    let session_dir = create_lazer_session_dir(&beatmap_hash)?;
+    let unpacked_dir = session_dir.join("unpacked");
+    fs::create_dir_all(&unpacked_dir).map_err(|err| err.to_string())?;
+
+    let mut files = Vec::with_capacity(manifest.f.len());
+    let target_osu_name = manifest.o.as_deref().map(|name| name.replace('\\', "/").to_ascii_lowercase());
+    let mut unpacked_osu_relative_path: Option<String> = None;
+
+    for entry in manifest.f {
+        let Some(relative_path) = normalize_relative_session_path(&entry.n) else {
+            continue;
+        };
+
+        let destination = unpacked_dir.join(&relative_path);
+        if let Some(parent) = destination.parent() {
+            fs::create_dir_all(parent).map_err(|err| err.to_string())?;
+        }
+
+        fs::copy(&entry.p, &destination).map_err(|err| {
+            format!("failed to unpack {}: {err}", relative_path.to_string_lossy())
+        })?;
+
+        let relative_string = relative_path.to_string_lossy().replace('\\', "/");
+        if unpacked_osu_relative_path.is_none() {
+            let is_target = target_osu_name
+                .as_deref()
+                .is_some_and(|target| target == relative_string.to_ascii_lowercase());
+            let is_osu_file = relative_string.to_ascii_lowercase().ends_with(".osu");
+            if is_target || is_osu_file {
+                unpacked_osu_relative_path = Some(relative_string.clone());
+            }
+        }
+
+        files.push(LazerSessionFileEntry {
+            relative_path: relative_string,
+            source_path: entry.p,
+        });
+    }
+
+    if files.is_empty() {
+        return Err("no unpackable files were found for this beatmap set".to_string());
+    }
+
+    let state = LazerSessionState {
+        source_file_path: file_path,
+        unpacked_osu_relative_path: unpacked_osu_relative_path.clone(),
+        files,
+    };
+    write_lazer_session_state(&session_dir, &state)?;
+
+    let unpacked_osu_path = unpacked_osu_relative_path
+        .as_ref()
+        .map(|relative| unpacked_dir.join(relative).to_string_lossy().to_string());
+
+    Ok(LazerPreparedSession {
+        session_dir: session_dir.to_string_lossy().to_string(),
+        unpacked_dir: unpacked_dir.to_string_lossy().to_string(),
+        unpacked_osu_path,
+    })
+}
+
+#[tauri::command]
+fn commit_lazer_map_session(session_dir: String) -> Result<(), String> {
+    let session_dir_path = PathBuf::from(&session_dir);
+    let unpacked_dir = session_dir_path.join("unpacked");
+    let state = read_lazer_session_state(&session_dir_path)?;
+
+    for file in &state.files {
+        let relative_path = Path::new(&file.relative_path);
+        let unpacked_path = unpacked_dir.join(relative_path);
+        if !unpacked_path.is_file() {
+            continue;
+        }
+
+        if let Some(parent) = Path::new(&file.source_path).parent() {
+            fs::create_dir_all(parent).map_err(|err| err.to_string())?;
+        }
+
+        fs::copy(&unpacked_path, &file.source_path).map_err(|err| {
+            format!("failed to repack {}: {err}", file.relative_path)
+        })?;
+    }
+
+    let _ = fs::remove_dir_all(&session_dir_path);
+    Ok(())
 }
 
 #[tauri::command]
@@ -1571,8 +2062,11 @@ fn main() {
             check_for_updates,
             read_image_file,
             read_binary_file,
+            read_audio_file,
             read_osu_file,
             stat_file,
+            prepare_lazer_map_session,
+            commit_lazer_map_session,
             show_item_in_folder,
             open_in_text_editor,
             open_osu_file,

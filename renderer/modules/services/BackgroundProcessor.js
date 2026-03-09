@@ -17,7 +17,7 @@ import {
     settings
 } from '../state/Store.js';
 import { showNotification } from '../components/NotificationSystem.js';
-import { getDirectoryPath, computeProgress } from '../utils/Helpers.js';
+import { computeProgress, resolveItemAssetPath } from '../utils/Helpers.js';
 import { isStarRatingMissing, isValidStarRating } from '../utils/Validation.js';
 import {
     parseAllSections,
@@ -55,13 +55,13 @@ const YIELD_DELAY_MS = 16;
 // Audio Duration Helper
 // ============================================
 
-const getAudioDurationMs = async (filePath) => {
+const getAudioDurationMs = async (filePath, fileNameHint = '') => {
     if (!filePath || !beatmapApi?.getAudioDuration) {
         return null;
     }
 
     try {
-        const duration = await beatmapApi.getAudioDuration(filePath);
+        const duration = await beatmapApi.getAudioDuration(filePath, fileNameHint);
         return duration || null;
     } catch (error) {
         console.error('Audio analysis failed:', error);
@@ -293,20 +293,32 @@ export const processAudioQueue = async (callbacks = {}) => {
         }, SAVE_DEBOUNCE_MS);
     };
 
-    // Build a Map for O(1) item lookups - fixes O(n) per item issue
-    const itemMap = new Map(beatmapItems.map(i => [i.id, i]));
+    let itemMap = new Map(beatmapItems.map(i => [i.id, i]));
+    const getCurrentItem = (itemId) => {
+        let item = itemMap.get(itemId);
+        if (item) {
+            return item;
+        }
+
+        // Scans can replace the entire beatmapItems array while this queue is running.
+        // Refresh the lookup so newly imported items still get processed.
+        itemMap = new Map(beatmapItems.map(i => [i.id, i]));
+        return itemMap.get(itemId);
+    };
 
     // Analyze a single item — returns true if duration was found
     const analyzeOne = async (itemId) => {
-        const item = itemMap.get(itemId);
+        const item = getCurrentItem(itemId);
         if (!item || typeof item.durationMs === 'number' || !item.audio || !item.filePath) {
             return false;
         }
 
         try {
-            const folderPath = getDirectoryPath(item.filePath);
-            const audioPath = `${folderPath}${item.audio}`;
-            const duration = await getAudioDurationMs(audioPath);
+            const audioPath = resolveItemAssetPath(item.filePath, item.audio);
+            if (!audioPath) {
+                return false;
+            }
+            const duration = await getAudioDurationMs(audioPath, item.audioFileName);
 
             if (duration) {
                 item.durationMs = duration;
@@ -468,8 +480,19 @@ export const processStarRatingQueue = async (callbacks = {}) => {
         }, SAVE_DEBOUNCE_MS);
     };
 
+    let itemMap = new Map(beatmapItems.map(i => [i.id, i]));
+    const getCurrentItem = (itemId) => {
+        let item = itemMap.get(itemId);
+        if (item) {
+            return item;
+        }
+
+        itemMap = new Map(beatmapItems.map(i => [i.id, i]));
+        return itemMap.get(itemId);
+    };
+
     const calculateOne = async (itemId) => {
-        const item = beatmapItems.find(i => i.id === itemId);
+        const item = getCurrentItem(itemId);
         if (!item || !item.filePath || !isStarRatingMissing(item.starRating)) {
             return false;
         }

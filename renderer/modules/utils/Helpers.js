@@ -159,6 +159,47 @@ export const getDirectoryPath = (filePath) => {
 };
 
 /**
+ * Check whether a path is already absolute.
+ * Supports Windows drive paths, UNC paths, and Unix-style absolute paths.
+ * @param {string} filePath - Path to test
+ * @returns {boolean} Whether the path is absolute
+ */
+export const isAbsolutePath = (filePath) => (
+    typeof filePath === 'string'
+    && /^(?:[A-Za-z]:[\\/]|\\\\|\/)/.test(filePath)
+);
+
+/**
+ * Normalize a path for identity/prefix comparisons.
+ * @param {string} filePath - Path to normalize
+ * @returns {string} Normalized lowercase path with forward slashes
+ */
+export const normalizePathForComparison = (filePath) => (
+    typeof filePath === 'string'
+        ? filePath.replace(/\\/g, '/').toLowerCase()
+        : ''
+);
+
+/**
+ * Resolve an item asset path, preserving absolute lazer paths.
+ * @param {string} filePath - Beatmap file path
+ * @param {string} assetPath - Relative or absolute asset path
+ * @returns {string} Absolute asset path or empty string
+ */
+export const resolveItemAssetPath = (filePath, assetPath) => {
+    if (!assetPath) {
+        return '';
+    }
+
+    if (isAbsolutePath(assetPath)) {
+        return assetPath;
+    }
+
+    const folderPath = getDirectoryPath(filePath || '');
+    return folderPath ? `${folderPath}${assetPath}` : '';
+};
+
+/**
  * Create a unique item ID
  * @param {string} seed - Optional seed string for deterministic ID
  * @returns {string} Unique item ID
@@ -237,6 +278,7 @@ export const normalizeMetadata = (metadata) => ({
     progress: clampProgressValue(metadata?.progress),
     durationMs: metadata?.durationMs ?? null,
     audio: metadata?.audio || '',
+    audioFileName: metadata?.audioFileName || '',
     previewTime: metadata?.previewTime ?? -1,
     dateAdded: metadata?.dateAdded ?? 0,
     dateModified: metadata?.dateModified ?? 0,

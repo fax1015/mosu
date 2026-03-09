@@ -151,6 +151,7 @@ export function saveToStorage({ showNotification } = {}) {
             mode: Number.isFinite(item.mode) ? Math.min(Math.max(item.mode, 0), 3) : 0,
             starRating: isValidStarRating(item.starRating) ? item.starRating : null,
             audio: item.audio || '',
+            audioFileName: item.audioFileName || '',
             deadline: (typeof item.deadline === 'number' || item.deadline === null) ? item.deadline : null,
             targetStarRating: (typeof item.targetStarRating === 'number' || item.targetStarRating === null) ? item.targetStarRating : null,
             durationMs: (typeof item.durationMs === 'number') ? item.durationMs : null,
@@ -228,16 +229,26 @@ export function scheduleSave({ scheduleEmbedSync } = {}) {
  */
 function buildItemFromCache(cached) {
     const highlights = cached.highlights ? deserializeHighlights(cached.highlights) : [];
+    const isLazerClient = settings?.osuClient === 'lazer';
+    const rawBeatmapSetId = String(cached?.beatmapSetID || '').trim();
+    const beatmapSetIdMatch = rawBeatmapSetId.match(/beatmapsets\/(\d+)/i);
+    const beatmapSetIdNumber = beatmapSetIdMatch?.[1] || (/^\d+$/.test(rawBeatmapSetId) ? rawBeatmapSetId : '');
 
     return {
         ...cached,
-        coverUrl: '', // Let UI calculate this via beatmapApi.convertFileSrc
+        audio: cached.audio || '',
+        coverPath: isLazerClient ? '' : (cached.coverPath || ''),
+        durationMs: (typeof cached.durationMs === 'number') ? cached.durationMs : null,
+        coverUrl: isLazerClient && beatmapSetIdNumber
+            ? `https://assets.ppy.sh/beatmaps/${beatmapSetIdNumber}/covers/cover.jpg`
+            : '', // Let UI calculate this via beatmapApi.convertFileSrc
         highlights,
         progress: computeProgress(highlights, settings),
         dateModified: cached.dateModified ?? 0,
         id: cached.id ?? createItemId(cached.filePath),
         starRating: isValidStarRating(cached.starRating) ? cached.starRating : null,
         mode: Number.isFinite(cached.mode) ? Math.min(Math.max(cached.mode, 0), 3) : 0,
+        progressPending: Boolean(cached.progressPending) || (Boolean(cached.audio) && typeof cached.durationMs !== 'number'),
     };
 }
 

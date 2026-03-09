@@ -66,7 +66,7 @@ export const handleActionClick = (action, itemId, target, callbacks) => {
         case 'show-folder': {
             const path = target.dataset.path;
             if (path && callbacks.showItemInFolder) {
-                callbacks.showItemInFolder(path);
+                callbacks.showItemInFolder(itemId, path);
             } else if (path && window.beatmapApi?.showItemInFolder) {
                 window.beatmapApi.showItemInFolder(path);
             }
@@ -76,7 +76,7 @@ export const handleActionClick = (action, itemId, target, callbacks) => {
         case 'open-editor': {
             const path = target.dataset.path;
             if (path && callbacks.openInTextEditor) {
-                callbacks.openInTextEditor(path);
+                callbacks.openInTextEditor(itemId, path);
             } else if (path && window.beatmapApi?.openInTextEditor) {
                 window.beatmapApi.openInTextEditor(path);
             }

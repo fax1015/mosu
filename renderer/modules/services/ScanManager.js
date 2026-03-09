@@ -43,6 +43,8 @@ let isScanningActive = false;
 
 const formatStatusLabel = ({ stage, current = 0, total = 0, discoveredFiles } = {}) => {
     switch (stage) {
+        case 'resolving-media':
+            return 'Resolving lazer audio and background files...';
         case 'discovering':
             return `Discovering lazer beatmaps... ${current} / ${total} files checked${typeof discoveredFiles === 'number' ? ` (${discoveredFiles} found)` : ''}`;
         case 'filtering':

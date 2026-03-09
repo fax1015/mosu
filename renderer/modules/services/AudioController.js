@@ -8,7 +8,8 @@ import {
     beatmapItems,
     settings
 } from '../state/Store.js';
-import { getDirectoryPath } from '../utils/Helpers.js';
+import { resolveItemAssetPath } from '../utils/Helpers.js';
+import { getAudioSourceUrl } from '../utils/AudioAssetLoader.js';
 import { showNotification } from '../components/NotificationSystem.js';
 import { applyTimelineToBox } from './TimelineRenderer.js';
 
@@ -16,14 +17,14 @@ import { applyTimelineToBox } from './TimelineRenderer.js';
 // Audio Duration Helper
 // ============================================
 
-const getAudioDurationMs = async (filePath) => {
+const getAudioDurationMs = async (filePath, fileNameHint = '') => {
     if (!filePath || !beatmapApi?.getAudioDuration) {
         return null;
     }
 
     try {
         // Use efficient Rust-side duration extraction (no full decode/PCM spike)
-        const duration = await beatmapApi.getAudioDuration(filePath);
+        const duration = await beatmapApi.getAudioDuration(filePath, fileNameHint);
         return duration || null;
     } catch (error) {
         console.error('Audio analysis failed:', error);
@@ -39,6 +40,7 @@ export const AudioController = {
     audio: new Audio(),
     currentItemId: null,
     isPlaying: false,
+    pendingSeekPercentage: null,
     playheadCtx: null,
     playheadCanvas: null,
     playheadAnimation: null,
@@ -51,6 +53,13 @@ export const AudioController = {
             this.isPlaying = true;
             this.startTick();
         });
+        this.audio.addEventListener('loadedmetadata', () => {
+            this._syncDurationFromAudio();
+            this._applyPendingSeek();
+        });
+        this.audio.addEventListener('durationchange', () => {
+            this._syncDurationFromAudio();
+        });
         this.audio.addEventListener('pause', () => {
             this.isPlaying = false;
             this._stopTick();
@@ -61,6 +70,7 @@ export const AudioController = {
             this._clearPlayhead();
             this.audio.currentTime = 0;
             this.currentItemId = null;
+            this.pendingSeekPercentage = null;
         });
         this.audio.addEventListener('error', (e) => {
             console.error('Audio playback error:', e);
@@ -68,6 +78,7 @@ export const AudioController = {
             this._stopTick();
             this._clearPlayhead();
             this.currentItemId = null;
+            this.pendingSeekPercentage = null;
             showNotification('Audio Error', 'Failed to play audio preview.', 'error');
         });
         this.updateVolume();
@@ -94,8 +105,8 @@ export const AudioController = {
         const item = beatmapItems.find(i => i.id === itemId);
         if (!item || !item.audio || !item.filePath) return;
 
-        const folderPath = getDirectoryPath(item.filePath);
-        const audioPath = `${folderPath}${item.audio}`;
+        const audioPath = resolveItemAssetPath(item.filePath, item.audio);
+        if (!audioPath) return;
 
         // Load audio source if switching items — use asset protocol for instant load
         if (this.currentItemId !== itemId) {
@@ -108,32 +119,26 @@ export const AudioController = {
                 }
             }
             this.currentItemId = itemId;
+            this.pendingSeekPercentage = null;
 
-            // Revoke old blob URL if it was one
-            if (this.audio.src && this.audio.src.startsWith('blob:')) {
-                URL.revokeObjectURL(this.audio.src);
-            }
-
-            // Use convertFileSrc for direct loading (no IPC round-trip)
-            if (beatmapApi?.convertFileSrc) {
-                this.audio.src = beatmapApi.convertFileSrc(audioPath);
-            } else {
-                // Fallback: read binary through IPC
-                try {
-                    const binary = await beatmapApi.readBinary(audioPath);
-                    if (!binary) return;
-
-                    const blob = new Blob([binary], { type: 'audio/mpeg' });
-                    this.audio.src = URL.createObjectURL(blob);
-                } catch (err) {
-                    console.error('Failed to load audio binary:', err);
+            try {
+                const audioSrc = await getAudioSourceUrl(audioPath, item.audioFileName);
+                if (!audioSrc) {
                     return;
                 }
+                this.audio.src = audioSrc;
+            } catch (err) {
+                console.error('Failed to load audio source:', err);
+                return;
             }
         }
 
-        if (percentage !== null && item.durationMs) {
-            this.audio.currentTime = percentage * (item.durationMs / 1000);
+        const effectiveDurationMs = this._getEffectiveDurationMs(item);
+        if (percentage !== null && effectiveDurationMs) {
+            this.audio.currentTime = percentage * (effectiveDurationMs / 1000);
+            this.pendingSeekPercentage = null;
+        } else if (percentage !== null) {
+            this.pendingSeekPercentage = percentage;
         } else if (this.audio.currentTime === 0 && item.previewTime > 0) {
             this.audio.currentTime = item.previewTime / 1000;
         }
@@ -156,13 +161,15 @@ export const AudioController = {
      */
     async _analyzeDurationInBackground(item, audioPath, seekPercentage) {
         try {
-            const duration = await getAudioDurationMs(audioPath);
+            const duration = await getAudioDurationMs(audioPath, item.audioFileName);
             if (duration) {
                 item.durationMs = duration;
+                item.progressPending = false;
 
                 // If user clicked a specific position, now seek to it accurately
                 if (seekPercentage !== null && this.currentItemId === item.id) {
                     this.audio.currentTime = seekPercentage * (duration / 1000);
+                    this.pendingSeekPercentage = null;
                 }
             }
         } catch (err) {
@@ -183,6 +190,7 @@ export const AudioController = {
         this.audio.pause();
         this.audio.currentTime = 0;
         this.currentItemId = null;
+        this.pendingSeekPercentage = null;
     },
 
     /**
@@ -228,9 +236,10 @@ export const AudioController = {
         if (!canvas) return;
 
         const item = beatmapItems.find(i => i.id === this.currentItemId);
-        if (!item || !item.durationMs) return;
+        const durationMs = this._getEffectiveDurationMs(item);
+        if (!item || !durationMs) return;
 
-        const percentage = this.audio.currentTime / (item.durationMs / 1000);
+        const percentage = this.audio.currentTime / (durationMs / 1000);
 
         // Re-draw base timeline first (clears previous playhead)
         // Pass the item directly instead of using renderIndex to avoid wrong highlights
@@ -269,6 +278,60 @@ export const AudioController = {
         if (!this.playheadAnimation) return;
         cancelAnimationFrame(this.playheadAnimation);
         this.playheadAnimation = null;
+    },
+
+    _getEffectiveDurationMs(item) {
+        if (typeof item?.durationMs === 'number' && item.durationMs > 0) {
+            return item.durationMs;
+        }
+
+        if (item?.id === this.currentItemId) {
+            const mediaDurationMs = this._getLoadedAudioDurationMs();
+            if (mediaDurationMs) {
+                item.durationMs = mediaDurationMs;
+                item.progressPending = false;
+                return mediaDurationMs;
+            }
+        }
+
+        return null;
+    },
+
+    _getLoadedAudioDurationMs() {
+        const durationSeconds = Number(this.audio?.duration);
+        if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) {
+            return null;
+        }
+
+        return Math.round(durationSeconds * 1000);
+    },
+
+    _syncDurationFromAudio() {
+        if (!this.currentItemId) {
+            return null;
+        }
+
+        const item = beatmapItems.find(i => i.id === this.currentItemId);
+        if (!item) {
+            return null;
+        }
+
+        return this._getEffectiveDurationMs(item);
+    },
+
+    _applyPendingSeek() {
+        if (this.pendingSeekPercentage === null) {
+            return;
+        }
+
+        const item = beatmapItems.find(i => i.id === this.currentItemId);
+        const durationMs = this._getEffectiveDurationMs(item);
+        if (!durationMs) {
+            return;
+        }
+
+        this.audio.currentTime = this.pendingSeekPercentage * (durationMs / 1000);
+        this.pendingSeekPercentage = null;
     }
 };
 

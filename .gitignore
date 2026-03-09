@@ -13,4 +13,9 @@ assets/
 embed-site/
 
 src-tauri/target/
+src-tauri/crates/realm-v24-reader/target/
 searchformaps.txt
+.tools/dotnet/
+.tools/osu-upstream/
+.tools/realm-inspector/bin/
+.tools/realm-inspector/obj/

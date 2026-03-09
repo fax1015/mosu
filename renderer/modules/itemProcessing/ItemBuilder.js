@@ -7,7 +7,14 @@
 import { beatmapApi } from '../bridge/Tauri.js';
 import { settings } from '../state/Store.js';
 import { isValidStarRating, isStarRatingMissing } from '../utils/Validation.js';
-import { getDirectoryPath, computeProgress, createItemId, isProgressPending } from '../utils/Helpers.js';
+import {
+    getDirectoryPath,
+    computeProgress,
+    createItemId,
+    isProgressPending,
+    normalizePathForComparison,
+    resolveItemAssetPath
+} from '../utils/Helpers.js';
 import {
     parseMetadata,
     parseHitObjects,
@@ -123,11 +130,13 @@ export function processWorkerResult(file, existing) {
     const fallbackDuration = maxTime > 0 ? maxTime + 1000 : 0;
 
     // Preserve existing duration if audio hasn't changed
-    const resolvedAudio = isLazerClient ? '' : (metadata?.audio || '');
-    let durationMs = (existing && existing.audio === resolvedAudio)
+    const resolvedAudio = isLazerClient
+        ? (metadata?.resolvedAudioPath || '')
+        : (metadata?.audio || '');
+    let durationMs = (existing && normalizePathForComparison(existing.audio) === normalizePathForComparison(resolvedAudio))
         ? existing.durationMs
         : null;
-    const progressPending = !isLazerClient && Boolean(resolvedAudio) && typeof durationMs !== 'number';
+    const progressPending = Boolean(resolvedAudio) && typeof durationMs !== 'number';
 
     const totalDuration = durationMs || fallbackDuration;
     if (totalDuration) {
@@ -140,6 +149,7 @@ export function processWorkerResult(file, existing) {
     const item = {
         ...metadata,
         audio: resolvedAudio,
+        audioFileName: metadata?.audio || existing?.audioFileName || '',
         durationMs,
         progressPending,
         deadline: existing?.deadline ?? null,
@@ -203,7 +213,9 @@ export function buildItemFromCache(cached, settingsObj = settings) {
     // Recalculate progress from highlights
     const progress = computeProgress(highlights, settingsObj);
     const isLazerClient = getActiveOsuClient(settingsObj) === 'lazer';
-    const restoredCoverUrl = isLazerClient ? buildLazerCoverUrl(cached.beatmapSetID) : '';
+    const restoredCoverUrl = (!cached.coverPath && isLazerClient)
+        ? buildLazerCoverUrl(cached.beatmapSetID)
+        : '';
 
     // Build item with defaults for missing fields
     const item = {
@@ -217,12 +229,11 @@ export function buildItemFromCache(cached, settingsObj = settings) {
         version: cached.version,
         beatmapSetID: cached.beatmapSetID || '-1',
         mode: Number.isFinite(cached.mode) ? Math.min(Math.max(cached.mode, 0), 3) : 0,
-        audio: isLazerClient ? '' : (cached.audio || ''),
+        audio: cached.audio || '',
+        audioFileName: cached.audioFileName || '',
         background: cached.background || '',
         durationMs: (typeof cached.durationMs === 'number') ? cached.durationMs : null,
-        progressPending: isLazerClient
-            ? false
-            : (Boolean(cached.progressPending) || (Boolean(cached.audio) && typeof cached.durationMs !== 'number')),
+        progressPending: Boolean(cached.progressPending) || (Boolean(cached.audio) && typeof cached.durationMs !== 'number'),
         previewTime: cached.previewTime ?? -1,
         deadline: (typeof cached.deadline === 'number' || cached.deadline === null)
             ? cached.deadline
@@ -301,9 +312,8 @@ export async function calculateItemDuration(item, callbacks = {}) {
     }
 
     try {
-        const folderPath = getDirectoryPath(item.filePath);
-        const audioPath = `${folderPath}${item.audio}`;
-        const duration = await getAudioDurationMs(audioPath);
+        const audioPath = resolveItemAssetPath(item.filePath, item.audio);
+        const duration = await getAudioDurationMs(audioPath, item.audioFileName);
 
         if (duration) {
             item.durationMs = duration;

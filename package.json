@@ -1,6 +1,6 @@
 {
   "name": "mosu",
-  "version": "0.7.3",
+  "version": "0.8.0",
   "description": "tracks the progress done of osu! maps",
   "keywords": [
     "tauri",
@@ -11,13 +11,14 @@
   "author": "fax1015",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "start": "tauri dev",
-    "dev": "npm run sync-version && tauri dev",
-    "dev:fresh": "npm run sync-version && node scripts/dev-fresh.js",
-    "build": "npm run sync-version && npm run clean && tauri build",
-    "package": "tauri build",
-    "make": "tauri build",
-    "dev:watch": "tauri dev",
+    "publish-sidecar": ".tools\\dotnet\\dotnet.exe publish src-tauri/sidecar/realm-resolver/RealmResolver.csproj -c Release -r win-x64 --self-contained false -o src-tauri/sidecar/realm-resolver/publish",
+    "start": "npm run publish-sidecar && tauri dev",
+    "dev": "npm run sync-version && npm run publish-sidecar && tauri dev",
+    "dev:fresh": "npm run sync-version && npm run publish-sidecar && node scripts/dev-fresh.js",
+    "build": "npm run sync-version && npm run clean && npm run publish-sidecar && tauri build",
+    "package": "npm run publish-sidecar && tauri build",
+    "make": "npm run publish-sidecar && tauri build",
+    "dev:watch": "npm run publish-sidecar && tauri dev",
     "clean": "node scripts/clean-target.js",
     "sync-version": "node scripts/update-version.js"
   },

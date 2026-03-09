@@ -256,6 +256,17 @@
         </form>
     </dialog>
 
+    <dialog class="prompt-dialog" id="lazerSessionDialog">
+        <div class="prompt-dialog-form">
+            <p class="prompt-dialog-label" id="lazerSessionTitle">Preparing lazer map</p>
+            <p class="settings-description prompt-dialog-description" id="lazerSessionDescription">Unpacking files...</p>
+            <p class="settings-description" id="lazerSessionPath" hidden></p>
+            <div class="prompt-dialog-actions">
+                <button type="button" class="primary-button" id="lazerSessionDoneBtn" disabled>Working...</button>
+            </div>
+        </div>
+    </dialog>
+
     <dialog class="prompt-dialog settings-dialog" id="settingsDialog">
         <div class="settings-header">
             <h2 class="settings-title">Settings</h2>
@@ -620,8 +631,9 @@
                 <span class="changelog-version-tag" id="changelogVersionTag">v0.0.0</span>
             </div>
             <ul class="changelog-list">
-                <h4>better preview</h4>
-                <li>- ported over the preview from the extension
+                <h4>full lazer support</h4>
+                <li>- works exactly like the stable clients
+                    - you can unpack and repack the map files from here too
                 </li>
             </ul>
         </div>

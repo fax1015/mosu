@@ -20,6 +20,7 @@ import { renderFromState, updateTabCounts, updateListItemElement, setLoading, up
 import { initEventDelegation } from '../interaction/EventDelegation.js';
 import { initSearch } from '../interaction/SearchHandler.js';
 import { AudioController } from '../services/AudioController.js';
+import { openLazerSessionForAction } from '../services/LazerEditSession.js';
 import { initMapPreview, openMapPreview } from '../services/MapPreview.js';
 import { initScanEventListeners, startStreamingScan } from '../services/ScanManager.js';
 import * as Persistence from '../state/Persistence.js';
@@ -1742,12 +1743,34 @@ export const init = async (callbacks = {}) => {
                 window.open(url, '_blank');
             }
         },
-        showItemInFolder: (path) => {
+        showItemInFolder: async (itemId, path) => {
+            if (getActiveOsuClient() === CLIENT_LAZER) {
+                await openLazerSessionForAction(itemId, 'show-folder', {
+                    refreshAfterCommit: async () => {
+                        if (callbacks.refreshLastDirectory) {
+                            await callbacks.refreshLastDirectory(callbacks);
+                        }
+                    }
+                });
+                return;
+            }
+
             if (window.beatmapApi?.showItemInFolder) {
                 window.beatmapApi.showItemInFolder(path);
             }
         },
-        openInTextEditor: (path) => {
+        openInTextEditor: async (itemId, path) => {
+            if (getActiveOsuClient() === CLIENT_LAZER) {
+                await openLazerSessionForAction(itemId, 'open-editor', {
+                    refreshAfterCommit: async () => {
+                        if (callbacks.refreshLastDirectory) {
+                            await callbacks.refreshLastDirectory(callbacks);
+                        }
+                    }
+                });
+                return;
+            }
+
             if (window.beatmapApi?.openInTextEditor) {
                 window.beatmapApi.openInTextEditor(path);
             }

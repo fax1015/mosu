@@ -6,7 +6,8 @@ import { beatmapApi } from '../bridge/Tauri.js';
 import * as Store from '../state/Store.js';
 import { parseMapPreviewData } from '../parsers/BeatmapParser.js';
 import { showNotification } from '../components/NotificationSystem.js';
-import { getDirectoryPath } from '../utils/Helpers.js';
+import { resolveItemAssetPath } from '../utils/Helpers.js';
+import { getAudioSourceUrl } from '../utils/AudioAssetLoader.js';
 import { renderTimeline } from './TimelineRenderer.js';
 
 const OSU_PLAYFIELD_WIDTH = 512;
@@ -2609,20 +2610,19 @@ const togglePlayback = async () => {
     return true;
 };
 
-const prepareAudioForItem = (item) => {
+const prepareAudioForItem = async (item) => {
     state.audioSyncEnabled = false;
 
-    if (!state.audio || !item?.filePath || !item?.audio || !beatmapApi?.convertFileSrc) {
+    if (!state.audio || !item?.filePath || !item?.audio) {
         return;
     }
 
-    const folderPath = getDirectoryPath(item.filePath);
-    if (!folderPath) {
+    const audioPath = resolveItemAssetPath(item.filePath, item.audio);
+    if (!audioPath) {
         return;
     }
 
-    const audioPath = `${folderPath}${item.audio}`;
-    const nextSrc = beatmapApi.convertFileSrc(audioPath);
+    const nextSrc = await getAudioSourceUrl(audioPath, item.audioFileName);
     if (!nextSrc) {
         return;
     }
@@ -2774,7 +2774,7 @@ export const openMapPreview = async (itemId) => {
             ? item.previewTime
             : 0;
         setCurrentTime(initialTime, { render: true, syncAudio: false });
-        prepareAudioForItem(item);
+        await prepareAudioForItem(item);
 
         state.popup.hidden = false;
         state.popup.classList.add('is-open');

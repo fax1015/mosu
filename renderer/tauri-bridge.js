@@ -60,8 +60,11 @@
     openFolderOsuFiles: (clientType) => invoke('open_folder_osu_files', { clientType }),
     readImage: (filePath) => invoke('read_image_file', { filePath }),
     readBinary: async (filePath) => toBinary(await invoke('read_binary_file', { filePath })),
+    readAudio: (filePath, fileNameHint) => invoke('read_audio_file', { filePath, fileNameHint }),
     readOsuFile: (filePath) => invoke('read_osu_file', { filePath }),
     statFile: (filePath) => invoke('stat_file', { filePath }),
+    prepareLazerMapSession: (filePath, dataRoot) => invoke('prepare_lazer_map_session', { filePath, dataRoot }),
+    commitLazerMapSession: (sessionDir) => invoke('commit_lazer_map_session', { sessionDir }),
     scanDirectoryOsuFiles: (dirPath, mapperName, knownFiles, clientType) =>
       invoke('scan_directory_osu_files', { dirPath, mapperName, knownFiles, clientType }),
     listDirectoryOsuFiles: (dirPath, mapperName, clientType) =>
@@ -70,7 +73,7 @@
     showItemInFolder: (filePath) => invoke('show_item_in_folder', { filePath }),
     openInTextEditor: (filePath) => invoke('open_in_text_editor', { filePath }),
     convertFileSrc: (filePath) => convertFileSrc(filePath),
-    getAudioDuration: (filePath) => invoke('get_audio_duration', { filePath }),
+    getAudioDuration: (filePath, fileNameHint) => invoke('get_audio_duration', { filePath, fileNameHint }),
     calculateStarRating: (filePath) => invoke('calculate_star_rating', { filePath }),
   };
 
