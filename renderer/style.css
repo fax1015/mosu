@@ -1474,7 +1474,7 @@ body.is-dragging-any * {
 .notes-textarea {
     width: 100%;
     height: 100%;
-    min-height: 70px;
+    min-height: 76px;
     background: rgba(0, 0, 0, 0.2);
     border: 1px solid rgba(255, 255, 255, 0.08);
     border-radius: var(--border-radius);

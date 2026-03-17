@@ -6,6 +6,7 @@
 import { normalizeMetadata } from '../utils/Helpers.js';
 import { scheduleCoverLoad } from '../services/CoverLoader.js';
 import { queueTimelineBatchRender } from '../services/TimelineRenderer.js';
+import * as Store from '../state/Store.js';
 
 // ============================================
 // State
@@ -13,9 +14,6 @@ import { queueTimelineBatchRender } from '../services/TimelineRenderer.js';
 
 /** @type {Set<string>} Set tracking expanded group keys */
 const groupedExpandedKeys = new Set();
-
-/** @type {number} Token for grouped render pass */
-let groupedRenderPassToken = 0;
 
 /** @type {Array<{el: HTMLElement, index: number}>} Batch render queue for timelines */
 const batchRenderTimelines = [];
@@ -386,7 +384,8 @@ export const buildGroupHeaderRow = (group, groupIndex, callbacks) => {
  * @param {Function} callbacks.updateEmptyState - Function to update empty state
  */
 export const renderGroupedView = (listContainer, groups, callbacks) => {
-    const passToken = ++groupedRenderPassToken;
+    const passToken = Store.groupedRenderPassToken + 1;
+    Store.updateState('groupedRenderPassToken', passToken);
 
     // Import cancelTimelineBatchRender from TimelineRenderer
     import('../services/TimelineRenderer.js').then(({ cancelTimelineBatchRender }) => {
@@ -428,7 +427,7 @@ export const renderGroupedView = (listContainer, groups, callbacks) => {
 
     const renderChunk = () => {
         // Check if this render pass is still valid (token hasn't changed)
-        if (passToken !== groupedRenderPassToken) {
+        if (passToken !== Store.groupedRenderPassToken) {
             return;
         }
 

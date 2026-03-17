@@ -6,6 +6,7 @@
 import { buildListItem } from './ListItemBuilder.js';
 import { updateEmptyState } from './StateRenderer.js';
 import { scheduleTimelineBatchRender, cancelTimelineBatchRender } from '../services/TimelineRenderer.js';
+import * as Store from '../state/Store.js';
 
 // ============================================
 // Constants
@@ -45,8 +46,6 @@ let chunkedRenderRaf = null;
 /** @type {boolean} Whether a chunked render is in progress */
 let isChunkedRenderInProgress = false;
 
-/** @type {number} Token for grouped render pass */
-let groupedRenderPassToken = 0;
 
 /** @type {Array<{el: HTMLElement, index: number}>} Batch render queue for timelines */
 const batchRenderTimelines = [];
@@ -253,7 +252,7 @@ export const syncVirtualList = (callbacks, options = {}) => {
  */
 export const renderVirtualList = (listContainer, items, callbacks) => {
     // Cancel any in-flight incremental grouped render when switching modes.
-    groupedRenderPassToken += 1;
+    Store.updateState('groupedRenderPassToken', Store.groupedRenderPassToken + 1);
     cancelTimelineBatchRender();
     cancelChunkedRender();
     itemsToRender = items;
