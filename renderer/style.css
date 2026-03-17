@@ -19,6 +19,11 @@
     background-clip: content-box;
 }
 
+/* Enable animating to/from intrinsic sizes (height: auto, etc.) */
+:root {
+    interpolate-size: allow-keywords;
+}
+
 *,
 *::before,
 *::after {
@@ -469,6 +474,7 @@ h6 {
 .list-box.is-dragging {
     opacity: 0.4;
     cursor: grabbing;
+    transition: none !important;
 }
 
 .list-box.drop-target {
@@ -548,7 +554,7 @@ body.is-dragging-any * {
 }
 
 .main-container {
-    padding: 1rem;
+    padding: 1rem 0.5rem 1rem 1rem;
     position: relative;
     z-index: 0;
     flex: 1;
@@ -557,6 +563,7 @@ body.is-dragging-any * {
     min-height: 0;
     scrollbar-width: thin;
     scrollbar-color: rgba(128, 128, 128, 0.5) transparent;
+    scrollbar-gutter: stable;
 }
 
 /* Custom scrollbar for main-container (WebKit browsers) */
@@ -1142,20 +1149,45 @@ body.is-dragging-any * {
     margin-bottom: var(--list-item-gap);
     /* Total row height matches VIRTUAL_ITEM_HEIGHT in JS */
     --media-height: clamp(60px, calc(var(--list-item-height) * 0.5), 160px);
-    transition: opacity var(--transition),
-        transform 0.25s cubic-bezier(0.32, 0.72, 0, 1),
+    transition: opacity 0.35s cubic-bezier(0.32, 0.72, 0, 1),
+        transform 0.35s cubic-bezier(0.32, 0.72, 0, 1),
+        height 0.35s cubic-bezier(0.32, 0.72, 0, 1),
+        margin 0.35s cubic-bezier(0.32, 0.72, 0, 1),
+        top 0.35s cubic-bezier(0.32, 0.72, 0, 1),
         background var(--transition);
-    contain: layout style;
+    contain: content;
     overflow: hidden;
 }
 
+/* Staggered pop-in — only applied on initial mount via JS-set class */
+.list-box.pop-in {
+    animation: listPopIn 0.5s linear(
+    0, 0.007, 0.029 2.2%, 0.117 4.7%, 0.622 14.3%, 0.823, 0.959 23.6%, 1.005 26%,
+    1.038 28.6%, 1.062 32.1%, 1.068 36%, 1.059 40.5%, 1.015 53.4%, 1 61.6%,
+    0.995 71.2%, 1
+  ) both;
+    animation-delay: var(--stagger-delay, 0ms);
+}
+
+@keyframes listPopIn {
+    0% {
+        opacity: 0;
+        transform: translateY(20px) scale(0.96);
+    }
+    60% {
+        opacity: 1;
+    }
+    100% {
+        opacity: 1;
+        transform: translateY(0) scale(1);
+    }
+}
+
 .list-box.removing {
-    animation: none;
-    opacity: 0;
-    transform: scale(0.96);
+    animation: none !important;
+    opacity: 0 !important;
+    transform: translateX(-50px) scale(0.95) !important;
     height: 0 !important;
-    padding-top: 0 !important;
-    padding-bottom: 0 !important;
     margin-bottom: 0 !important;
     overflow: hidden;
     pointer-events: none;
@@ -2340,12 +2372,23 @@ body.is-dragging-any * {
     stroke-linejoin: round;
 }
 
+.client-option-icon svg.client-option-icon-svg--filled {
+    fill: currentColor;
+    stroke: none;
+    stroke-width: 0;
+}
+
+.client-option-icon svg.client-option-icon-svg--filled path {
+    fill: currentColor;
+    stroke: none;
+}
+
 .client-option-icon--stable {
-    color: #ff8dbe;
+    color: currentColor;
 }
 
 .client-option-icon--lazer {
-    color: #76e6ff;
+    color: currentColor;
 }
 
 .client-option-copy {
@@ -2992,21 +3035,31 @@ input:checked+.slider:before {
     background: var(--bg-secondary);
     border-radius: var(--border-radius);
     overflow: hidden;
-    box-shadow: var(--shadow);
-    transition: box-shadow 0.2s ease;
-    margin-bottom: 12px;
-    transform: translateZ(0);
-    /* force GPU layer for the entire group */
-    contain: paint;
-    /* major optimization — internal changes don't affect siblings */
-    margin-top: 0;
+    margin-bottom: var(--list-item-gap);
+    transition: margin 0.35s cubic-bezier(0.32, 0.72, 0, 1), 
+                box-shadow 0.35s ease,
+                opacity 0.35s cubic-bezier(0.32, 0.72, 0, 1),
+                transform 0.35s cubic-bezier(0.32, 0.72, 0, 1),
+                height 0.35s cubic-bezier(0.32, 0.72, 0, 1);
+    contain: content;
 }
 
+.group-row.pop-in {
+    animation: listPopIn 0.5s linear(
+    0, 0.007, 0.029 2.2%, 0.117 4.7%, 0.622 14.3%, 0.823, 0.959 23.6%, 1.005 26%,
+    1.038 28.6%, 1.062 32.1%, 1.068 36%, 1.059 40.5%, 1.015 53.4%, 1 61.6%,
+    0.995 71.2%, 1
+  ) both;
+    animation-delay: var(--stagger-delay, 0ms);
+}
 
-
-.group-row.is-expanded {
-    box-shadow: 0 6px 24px rgba(0, 0, 0, 0.4);
-    /* keep overflow:hidden — border-radius is handled on .group-row-cover directly */
+.group-row.removing {
+    animation: none !important;
+    opacity: 0 !important;
+    transform: translateX(-50px) scale(0.95) !important;
+    height: 0 !important;
+    margin-bottom: 0 !important;
+    pointer-events: none;
 }
 
 /* ---- Group Header (clickable bar) ---- */

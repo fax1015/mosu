@@ -18,7 +18,7 @@ import { createDropdownMenu } from '../ui/DropdownMenu.js';
 import { updateSortUI, updateSRRangeUI, setupSRRangeResizeObserver, updateVersionLabels } from '../ui/SettingsUI.js';
 import { renderFromState, updateTabCounts, updateListItemElement, setLoading, updateProgress, updateEmptyState, clearFilterCache } from '../ui/StateRenderer.js';
 import { initEventDelegation } from '../interaction/EventDelegation.js';
-import { initSearch } from '../interaction/SearchHandler.js';
+import { initSearch, clearSearch } from '../interaction/SearchHandler.js';
 import { AudioController } from '../services/AudioController.js';
 import { openLazerSessionForAction } from '../services/LazerEditSession.js';
 import { initMapPreview, openMapPreview } from '../services/MapPreview.js';
@@ -521,6 +521,28 @@ export const initToolbar = (callbacks = {}) => {
             }
 
             callbacks.refreshLastDirectory(callbacks);
+        });
+    }
+
+    // Clear filters button
+    const clearFiltersButton = document.querySelector('#clearFiltersBtn');
+    if (clearFiltersButton) {
+        clearFiltersButton.addEventListener('click', () => {
+            // Reset search
+            clearSearch({ renderFromState });
+            const searchInputEl = document.querySelector('#searchInput');
+            if (searchInputEl) searchInputEl.value = '';
+
+            // Reset SR range to defaults — must set input values first since updateSRRangeUI reads them directly
+            const srMinEl = document.getElementById('srMin');
+            const srMaxEl = document.getElementById('srMax');
+            if (srMinEl) srMinEl.value = '0';
+            if (srMaxEl) srMaxEl.value = '10';
+            Store.updateState('srFilter', { min: 0, max: 10 });
+            updateSRRangeUI({ min: 0, max: 10 }, null, { rerenderList: false });
+
+            renderFromState();
+            updateEmptyState(document.querySelector('#listContainer'));
         });
     }
 

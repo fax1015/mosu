@@ -410,6 +410,12 @@ export const renderGroupedView = (listContainer, groups, callbacks) => {
             const groupEl = buildGroupHeaderRow(group, index, callbacks);
             groupEl.dataset.groupKey = group.key;
             groupEl.dataset.groupIndex = index;
+            
+            if (!callbacks.isFiltering && index < 15) {
+                groupEl.style.setProperty('--stagger-delay', `${index * 40}ms`);
+                groupEl.classList.add('pop-in');
+            }
+            
             fragment.appendChild(groupEl);
         });
         listContainer.appendChild(fragment);
@@ -439,6 +445,12 @@ export const renderGroupedView = (listContainer, groups, callbacks) => {
             const groupEl = buildGroupHeaderRow(group, i, callbacks);
             groupEl.dataset.groupKey = group.key;
             groupEl.dataset.groupIndex = i;
+            
+            if (!callbacks.isFiltering && i < 15) {
+                groupEl.style.setProperty('--stagger-delay', `${i * 40}ms`);
+                groupEl.classList.add('pop-in');
+            }
+            
             fragment.appendChild(groupEl);
         }
 

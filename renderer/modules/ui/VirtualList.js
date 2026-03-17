@@ -65,8 +65,9 @@ let cachedCallbacks = null;
  * @param {Set<string>} currentIdsInDom - Set of IDs already in DOM
  * @param {Object} callbacks - Callback functions
  * @param {number} maxPerFrame - Maximum items to render per frame
+ * @param {Object} options - Options
  */
-const renderVirtualListChunked = (container, indicesToRender, currentIdsInDom, callbacks, maxPerFrame) => {
+const renderVirtualListChunked = (container, indicesToRender, currentIdsInDom, callbacks, maxPerFrame, options = {}) => {
     // Cancel any in-progress chunked render
     if (chunkedRenderRaf) {
         cancelAnimationFrame(chunkedRenderRaf);
@@ -95,9 +96,21 @@ const renderVirtualListChunked = (container, indicesToRender, currentIdsInDom, c
             const el = buildListItem(item, itemIndex, callbacks);
             el.dataset.renderIndex = itemIndex;
             el.style.top = `${itemIndex * VIRTUAL_ITEM_HEIGHT}px`;
+            
+            // Add pop-in animation only for initial render (not scroll)
+            if (options.isInitialRender) {
+                const sc = getScrollContainer();
+                const firstVisibleItem = Math.floor(((sc ? sc.scrollTop : 0) - cachedContainerTop) / VIRTUAL_ITEM_HEIGHT);
+                const visibleIndex = itemIndex - firstVisibleItem;
+                if (visibleIndex >= 0 && visibleIndex < 15) {
+                    el.style.setProperty('--stagger-delay', `${visibleIndex * 40}ms`);
+                    el.classList.add('pop-in');
+                }
+            }
+            
             fragment.appendChild(el);
             batchRenderTimelines.push({ el, index: itemIndex });
-            addedCount++;
+            addedCount++
         }
 
         if (addedCount > 0) {
@@ -216,7 +229,8 @@ export const syncVirtualList = (callbacks, options = {}) => {
             indicesToRender,
             currentIdsInDom,
             effectiveCallbacks,
-            MAX_ITEMS_PER_FRAME
+            MAX_ITEMS_PER_FRAME,
+            options
         );
     } else {
         // Use synchronous rendering for small updates (scrolling)
@@ -226,6 +240,18 @@ export const syncVirtualList = (callbacks, options = {}) => {
             const el = buildListItem(item, i, effectiveCallbacks);
             el.dataset.renderIndex = i;
             el.style.top = `${i * VIRTUAL_ITEM_HEIGHT}px`;
+            
+            // Add pop-in animation only for initial render (not scroll)
+            if (options.isInitialRender) {
+                const sc = getScrollContainer();
+                const firstVisibleItem = Math.floor(((sc ? sc.scrollTop : 0) - cachedContainerTop) / VIRTUAL_ITEM_HEIGHT);
+                const visibleIndex = i - firstVisibleItem;
+                if (visibleIndex >= 0 && visibleIndex < 15) {
+                    el.style.setProperty('--stagger-delay', `${visibleIndex * 40}ms`);
+                    el.classList.add('pop-in');
+                }
+            }
+            
             fragment.appendChild(el);
             batchRenderTimelines.push({ el, index: i });
         }
@@ -289,7 +315,8 @@ export const renderVirtualList = (listContainer, items, callbacks) => {
     cachedContainerTop = rect.top - scrollContainerRect.top;
 
     // Use chunked rendering for initial render to improve INP
-    syncVirtualList(callbacks, { chunked: true });
+    // Skip pop-in animation when filters are active (search/SR)
+    syncVirtualList(callbacks, { chunked: true, isInitialRender: !callbacks.isFiltering });
 };
 
 /**

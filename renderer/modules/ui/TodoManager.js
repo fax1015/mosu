@@ -171,23 +171,28 @@ export const removeItemFromView = (itemId, callbacks) => {
  */
 export const animateRemoveElement = (element, onComplete) => {
     if (!element) return;
-    element.style.height = `${element.offsetHeight}px`;
-    void element.offsetHeight;
-    element.classList.add('removing');
 
     const onDone = () => {
         if (element.parentElement) element.remove();
         if (onComplete) onComplete();
     };
 
+    // Lock height so CSS can animate it to 0
+    element.style.height = `${element.offsetHeight}px`;
+    element.style.transition = 'none';
+    void element.offsetHeight;
+    element.style.transition = '';
+
+    element.classList.add('removing');
+
     element.addEventListener('transitionend', (event) => {
-        if (event.target === element && event.propertyName === 'height') {
+        if (event.target === element && event.propertyName === 'opacity') {
             onDone();
         }
     }, { once: true });
 
     // Safety fallback
-    setTimeout(onDone, 600);
+    setTimeout(onDone, 500);
 };
 
 // ============================================

@@ -70,13 +70,14 @@ export const updateProgress = (current, total, labelText = null) => {
 // ============================================
 
 /**
- * Update empty state visibility
+ * Update empty state visibility and text
  * @param {HTMLElement} listContainer - List container element
  * @param {Array<Object>} items - Items to check (optional, uses itemsToRender if not provided)
  */
 export const updateEmptyState = (listContainer, items) => {
     const emptyState = document.querySelector('#emptyState');
-    const clearAllButton = document.querySelector('#clearAllBtn');
+    const clearFiltersButton = document.querySelector('#clearFiltersBtn');
+    
     if (!emptyState || !listContainer) {
         return;
     }
@@ -88,9 +89,22 @@ export const updateEmptyState = (listContainer, items) => {
     // Toggle is-active for transition, but avoid display: none so transitions work
     emptyState.classList.toggle('is-active', !hasItems);
 
-    if (clearAllButton) {
-        // Show clear button if there are any items in the current view
-        clearAllButton.classList.toggle('is-hidden', !hasItems);
+    if (!hasItems) {
+        const viewMode = Store.viewMode;
+        if (viewMode === 'all') {
+            emptyState.textContent = 'No maps here~ You should add some!';
+        } else if (viewMode === 'completed') {
+            emptyState.textContent = 'No maps in your todo list~ Maybe get to work?';
+        } else if (viewMode === 'todo') {
+            emptyState.textContent = 'No maps left~ All done!';
+        }
+    }
+
+    if (clearFiltersButton) {
+        const srFilter = Store.srFilter;
+        const hasActiveFilters = !!Store.searchQuery ||
+            (srFilter && (srFilter.min > 0 || srFilter.max < 10));
+        clearFiltersButton.classList.toggle('is-hidden', !hasActiveFilters);
     }
 };
 
@@ -571,12 +585,18 @@ export const renderFromState = (callbacks = {}) => {
     listContainer.className = '';
     listContainer.classList.add(`view-${effectiveCallbacks.viewMode}`);
 
+    // Detect if a filter/search is active — suppress pop-in animation in this case
+    const srFilter = effectiveCallbacks.srFilter;
+    const isFiltering = !!effectiveCallbacks.searchQuery ||
+        (srFilter && (srFilter.min > 0 || srFilter.max < 10));
+
     // Use grouped view only on 'all' tab when the setting is enabled
     if (effectiveCallbacks.settings.groupMapsBySong && effectiveCallbacks.viewMode === 'all') {
         listContainer.classList.add('view-grouped');
         const groups = groupItemsBySong(itemsToRender);
         renderGroupedView(listContainer, groups, {
             ...effectiveCallbacks,
+            isFiltering,
             updateEmptyState: (container) => updateEmptyState(container, itemsToRender),
             buildListItem
         });
@@ -585,6 +605,7 @@ export const renderFromState = (callbacks = {}) => {
         setItemsToRender(itemsToRender);
         renderVirtualList(listContainer, itemsToRender, {
             ...effectiveCallbacks,
+            isFiltering,
             updateEmptyState: (container) => updateEmptyState(container, itemsToRender)
         });
     }
