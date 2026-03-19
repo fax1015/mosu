@@ -36,6 +36,7 @@ let boundClickHandler = null;
  * @param {Function} callbacks.showItemInFolder - Show item in folder
  * @param {Function} callbacks.openInTextEditor - Open item in text editor
  * @param {Function} callbacks.openMapPreview - Open map preview popup
+ * @param {Function} callbacks.addToCollection - Add beatmap to an osu! collection
  */
 export const handleActionClick = (action, itemId, target, callbacks) => {
     switch (action) {
@@ -86,6 +87,12 @@ export const handleActionClick = (action, itemId, target, callbacks) => {
         case 'open-map-preview':
             if (itemId && callbacks.openMapPreview) {
                 callbacks.openMapPreview(itemId);
+            }
+            break;
+
+        case 'add-to-collection':
+            if (itemId && callbacks.addToCollection) {
+                callbacks.addToCollection(itemId);
             }
             break;
     }
@@ -250,6 +257,7 @@ export const unbindGlobalEvents = () => {
  * @param {Function} callbacks.showItemInFolder - Show item in folder
  * @param {Function} callbacks.openInTextEditor - Open item in text editor
  * @param {Function} callbacks.openMapPreview - Open map preview popup
+ * @param {Function} callbacks.addToCollection - Add beatmap to an osu! collection
  * @param {Function} callbacks.playAudio - Play audio for item
  * @param {string} callbacks.viewMode - Current view mode
  * @returns {boolean} Whether initialization succeeded
@@ -292,7 +300,8 @@ export const initEventDelegation = (callbacks = {}) => {
         }),
         playAudio: (itemId) => AudioController.play(itemId),
         stopAudio: () => AudioController.stop(),
-        openMapPreview: () => { }
+        openMapPreview: () => { },
+        addToCollection: () => { }
     };
 
     listContainer = document.querySelector('#listContainer');

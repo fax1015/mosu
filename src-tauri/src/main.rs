@@ -7,7 +7,7 @@ use serde::Serialize;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::fs;
-use std::io::{BufReader, Read};
+use std::io::{BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -28,6 +28,8 @@ struct OsuFilePayload {
     file_path: String,
     content: String,
     stat: FileStatPayload,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    beatmap_hash: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -67,6 +69,8 @@ struct ScanFilePayload {
     file_path: String,
     stat: FileStatPayload,
     #[serde(skip_serializing_if = "Option::is_none")]
+    beatmap_hash: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     unchanged: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     metadata: Option<ParsedMetadata>,
@@ -85,6 +89,21 @@ struct ScanFilePayload {
 struct ScanDirectoryPayload {
     files: Vec<ScanFilePayload>,
     directory: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OsuCollectionPayload {
+    name: String,
+    beatmap_hashes: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CollectionMutationPayload {
+    success: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -123,6 +142,12 @@ struct ParsedOsu {
     hit_ends: Vec<i32>,
     break_periods: Vec<TimeRange>,
     bookmarks: Vec<i32>,
+}
+
+#[derive(Debug, Clone)]
+struct StableCollectionsDb {
+    version: i32,
+    collections: Vec<OsuCollectionPayload>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -197,6 +222,258 @@ struct CachedLazerResolver {
 
 static LAZER_RESOLVER_CACHE: OnceLock<Mutex<HashMap<String, CachedLazerResolver>>> = OnceLock::new();
 const LAZER_SESSION_META_FILE: &str = ".mosu-lazer-session.json";
+
+const MD5_SHIFT_AMOUNTS: [u32; 64] = [
+    7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22,
+    5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20,
+    4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23,
+    6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21,
+];
+
+const MD5_TABLE: [u32; 64] = [
+    0xd76aa478, 0xe8c7b756, 0x242070db, 0xc1bdceee,
+    0xf57c0faf, 0x4787c62a, 0xa8304613, 0xfd469501,
+    0x698098d8, 0x8b44f7af, 0xffff5bb1, 0x895cd7be,
+    0x6b901122, 0xfd987193, 0xa679438e, 0x49b40821,
+    0xf61e2562, 0xc040b340, 0x265e5a51, 0xe9b6c7aa,
+    0xd62f105d, 0x02441453, 0xd8a1e681, 0xe7d3fbc8,
+    0x21e1cde6, 0xc33707d6, 0xf4d50d87, 0x455a14ed,
+    0xa9e3e905, 0xfcefa3f8, 0x676f02d9, 0x8d2a4c8a,
+    0xfffa3942, 0x8771f681, 0x6d9d6122, 0xfde5380c,
+    0xa4beea44, 0x4bdecfa9, 0xf6bb4b60, 0xbebfbc70,
+    0x289b7ec6, 0xeaa127fa, 0xd4ef3085, 0x04881d05,
+    0xd9d4d039, 0xe6db99e5, 0x1fa27cf8, 0xc4ac5665,
+    0xf4292244, 0x432aff97, 0xab9423a7, 0xfc93a039,
+    0x655b59c3, 0x8f0ccc92, 0xffeff47d, 0x85845dd1,
+    0x6fa87e4f, 0xfe2ce6e0, 0xa3014314, 0x4e0811a1,
+    0xf7537e82, 0xbd3af235, 0x2ad7d2bb, 0xeb86d391,
+];
+
+fn compute_osu_md5_hex(bytes: &[u8]) -> String {
+    let mut message = bytes.to_vec();
+    let bit_len = (message.len() as u64).wrapping_mul(8);
+
+    message.push(0x80);
+    while (message.len() % 64) != 56 {
+        message.push(0);
+    }
+    message.extend_from_slice(&bit_len.to_le_bytes());
+
+    let mut a0 = 0x67452301_u32;
+    let mut b0 = 0xefcdab89_u32;
+    let mut c0 = 0x98badcfe_u32;
+    let mut d0 = 0x10325476_u32;
+
+    for chunk in message.chunks_exact(64) {
+        let mut words = [0_u32; 16];
+        for (index, word) in words.iter_mut().enumerate() {
+            let offset = index * 4;
+            *word = u32::from_le_bytes([
+                chunk[offset],
+                chunk[offset + 1],
+                chunk[offset + 2],
+                chunk[offset + 3],
+            ]);
+        }
+
+        let mut a = a0;
+        let mut b = b0;
+        let mut c = c0;
+        let mut d = d0;
+
+        for round in 0..64 {
+            let (f, g) = match round {
+                0..=15 => ((b & c) | ((!b) & d), round),
+                16..=31 => ((d & b) | ((!d) & c), (5 * round + 1) % 16),
+                32..=47 => (b ^ c ^ d, (3 * round + 5) % 16),
+                _ => (c ^ (b | !d), (7 * round) % 16),
+            };
+
+            let rotated = a
+                .wrapping_add(f)
+                .wrapping_add(MD5_TABLE[round])
+                .wrapping_add(words[g])
+                .rotate_left(MD5_SHIFT_AMOUNTS[round]);
+
+            a = d;
+            d = c;
+            c = b;
+            b = b.wrapping_add(rotated);
+        }
+
+        a0 = a0.wrapping_add(a);
+        b0 = b0.wrapping_add(b);
+        c0 = c0.wrapping_add(c);
+        d0 = d0.wrapping_add(d);
+    }
+
+    let mut digest = [0_u8; 16];
+    digest[..4].copy_from_slice(&a0.to_le_bytes());
+    digest[4..8].copy_from_slice(&b0.to_le_bytes());
+    digest[8..12].copy_from_slice(&c0.to_le_bytes());
+    digest[12..16].copy_from_slice(&d0.to_le_bytes());
+
+    let mut out = String::with_capacity(32);
+    for byte in digest {
+        use std::fmt::Write as _;
+        let _ = write!(&mut out, "{byte:02x}");
+    }
+    out
+}
+
+fn read_i32_le<R: Read>(reader: &mut R) -> Result<i32, String> {
+    let mut buf = [0_u8; 4];
+    reader.read_exact(&mut buf).map_err(|err| err.to_string())?;
+    Ok(i32::from_le_bytes(buf))
+}
+
+fn write_i32_le<W: Write>(writer: &mut W, value: i32) -> Result<(), String> {
+    writer
+        .write_all(&value.to_le_bytes())
+        .map_err(|err| err.to_string())
+}
+
+fn read_uleb128<R: Read>(reader: &mut R) -> Result<usize, String> {
+    let mut result = 0_usize;
+    let mut shift = 0_u32;
+
+    loop {
+        let mut buf = [0_u8; 1];
+        reader.read_exact(&mut buf).map_err(|err| err.to_string())?;
+        let byte = buf[0];
+        result |= usize::from(byte & 0x7f) << shift;
+
+        if (byte & 0x80) == 0 {
+            return Ok(result);
+        }
+
+        shift += 7;
+        if shift > 28 {
+            return Err("osu string length prefix is too large".to_string());
+        }
+    }
+}
+
+fn write_uleb128<W: Write>(writer: &mut W, mut value: usize) -> Result<(), String> {
+    loop {
+        let mut byte = (value & 0x7f) as u8;
+        value >>= 7;
+        if value != 0 {
+            byte |= 0x80;
+        }
+
+        writer.write_all(&[byte]).map_err(|err| err.to_string())?;
+
+        if value == 0 {
+            return Ok(());
+        }
+    }
+}
+
+fn read_osu_string<R: Read>(reader: &mut R) -> Result<Option<String>, String> {
+    let mut indicator = [0_u8; 1];
+    reader
+        .read_exact(&mut indicator)
+        .map_err(|err| err.to_string())?;
+
+    match indicator[0] {
+        0x00 => Ok(None),
+        0x0b => {
+            let length = read_uleb128(reader)?;
+            let mut bytes = vec![0_u8; length];
+            reader
+                .read_exact(&mut bytes)
+                .map_err(|err| err.to_string())?;
+            String::from_utf8(bytes)
+                .map(Some)
+                .map_err(|err| err.to_string())
+        }
+        other => Err(format!("unexpected osu string indicator byte: {other:#04x}")),
+    }
+}
+
+fn write_osu_string<W: Write>(writer: &mut W, value: Option<&str>) -> Result<(), String> {
+    let Some(value) = value.filter(|value| !value.is_empty()) else {
+        return writer.write_all(&[0x00]).map_err(|err| err.to_string());
+    };
+
+    writer.write_all(&[0x0b]).map_err(|err| err.to_string())?;
+    write_uleb128(writer, value.len())?;
+    writer
+        .write_all(value.as_bytes())
+        .map_err(|err| err.to_string())
+}
+
+fn parse_stable_collections_bytes(bytes: &[u8]) -> Result<StableCollectionsDb, String> {
+    let mut reader = std::io::Cursor::new(bytes);
+    let version = read_i32_le(&mut reader)?;
+    let collection_count = read_i32_le(&mut reader)?;
+    if collection_count < 0 {
+        return Err("collection count was negative".to_string());
+    }
+
+    let mut collections = Vec::with_capacity(collection_count as usize);
+    for _ in 0..collection_count {
+        let name = read_osu_string(&mut reader)?.unwrap_or_default();
+        let beatmap_count = read_i32_le(&mut reader)?;
+        if beatmap_count < 0 {
+            return Err(format!("collection '{name}' had a negative beatmap count"));
+        }
+
+        let mut beatmap_hashes = Vec::with_capacity(beatmap_count as usize);
+        for _ in 0..beatmap_count {
+            if let Some(hash) = read_osu_string(&mut reader)? {
+                let normalized = hash.trim().to_ascii_lowercase();
+                if !normalized.is_empty() {
+                    beatmap_hashes.push(normalized);
+                }
+            }
+        }
+
+        collections.push(OsuCollectionPayload { name, beatmap_hashes });
+    }
+
+    Ok(StableCollectionsDb { version, collections })
+}
+
+fn write_stable_collections_bytes(db: &StableCollectionsDb) -> Result<Vec<u8>, String> {
+    let mut out = Vec::with_capacity(4096);
+    write_i32_le(&mut out, db.version)?;
+    write_i32_le(&mut out, db.collections.len() as i32)?;
+
+    for collection in &db.collections {
+        write_osu_string(&mut out, Some(collection.name.as_str()))?;
+        write_i32_le(&mut out, collection.beatmap_hashes.len() as i32)?;
+
+        for hash in &collection.beatmap_hashes {
+            let normalized = hash.trim().to_ascii_lowercase();
+            if normalized.is_empty() {
+                write_osu_string(&mut out, None)?;
+            } else {
+                write_osu_string(&mut out, Some(normalized.as_str()))?;
+            }
+        }
+    }
+
+    Ok(out)
+}
+
+fn read_stable_collections_file(path: &Path) -> Result<StableCollectionsDb, String> {
+    let bytes = fs::read(path).map_err(|err| err.to_string())?;
+    parse_stable_collections_bytes(&bytes)
+}
+
+fn is_locked_io_error(error: &std::io::Error) -> bool {
+    if matches!(error.kind(), std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::WouldBlock) {
+        return true;
+    }
+
+    let message = error.to_string().to_ascii_lowercase();
+    message.contains("being used by another process")
+        || message.contains("sharing violation")
+        || message.contains("file is in use")
+        || message.contains("locked")
+}
 
 fn get_mtime_ms(path: &Path) -> Result<f64, String> {
     let metadata = fs::metadata(path).map_err(|err| err.to_string())?;
@@ -358,7 +635,7 @@ fn build_lazer_resolver(data_root: &Path) -> Result<Arc<LazerResolvedAssets>, St
 
     let output = Command::new(&exe)
         .arg(data_root.as_os_str())
-        .arg("--resolve-all")
+        .arg("resolve-all")
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .output()
@@ -422,7 +699,7 @@ fn get_lazer_manifest(data_root: &Path, beatmap_hash: &str) -> Result<SidecarMan
 
     let output = Command::new(&exe)
         .arg(data_root.as_os_str())
-        .arg("--manifest")
+        .arg("manifest")
         .arg(beatmap_hash)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -1026,6 +1303,7 @@ fn scan_single_osu_file(
             return Some(ScanFilePayload {
                 file_path: file_path.to_string(),
                 stat: FileStatPayload { mtime_ms },
+                beatmap_hash: beatmap_hash_from_lazer_path(file_path),
                 unchanged: Some(true),
                 metadata: None,
                 hit_starts: None,
@@ -1040,15 +1318,20 @@ fn scan_single_osu_file(
     let path = Path::new(file_path);
     let file = fs::File::open(path).ok()?;
     let mut reader = BufReader::with_capacity(32768, file);
-    let mut content = String::with_capacity(32768);
-    reader.read_to_string(&mut content).ok()?;
+    let mut bytes = Vec::with_capacity(32768);
+    reader.read_to_end(&mut bytes).ok()?;
+    let content = String::from_utf8_lossy(&bytes);
 
     let mut parsed = parse_osu_content(&content);
+    let beatmap_hash = match lazer_resolver {
+        Some(_) => beatmap_hash_from_lazer_path(file_path),
+        None => Some(compute_osu_md5_hex(&bytes)),
+    };
 
     if let (Some(resolver), Some(beatmap_hash)) =
-        (lazer_resolver, beatmap_hash_from_lazer_path(file_path))
+        (lazer_resolver, beatmap_hash.as_deref())
     {
-        if let Some((audio_path, bg_path)) = resolver.map.get(&beatmap_hash) {
+        if let Some((audio_path, bg_path)) = resolver.map.get(beatmap_hash) {
             if let Some(audio) = audio_path {
                 parsed.metadata.resolved_audio_path = audio.clone();
             }
@@ -1069,6 +1352,7 @@ fn scan_single_osu_file(
     Some(ScanFilePayload {
         file_path: file_path.to_string(),
         stat: FileStatPayload { mtime_ms },
+        beatmap_hash,
         unchanged: None,
         metadata: Some(parsed.metadata),
         hit_starts: Some(parsed.hit_starts),
@@ -1542,6 +1826,7 @@ fn read_osu_file(file_path: String) -> Option<OsuFilePayload> {
         file_path,
         content,
         stat: FileStatPayload { mtime_ms },
+        beatmap_hash: None,
     })
 }
 
@@ -1712,6 +1997,195 @@ fn commit_lazer_map_session(session_dir: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn parse_stable_collections(path: String) -> Result<Vec<OsuCollectionPayload>, String> {
+    let db = read_stable_collections_file(Path::new(&path))?;
+    Ok(db.collections)
+}
+
+#[tauri::command]
+fn add_to_stable_collection(
+    collection_db_path: String,
+    collection_name: String,
+    beatmap_hash: String,
+) -> CollectionMutationPayload {
+    let path = PathBuf::from(&collection_db_path);
+    let normalized_name = collection_name.trim();
+    let normalized_hash = beatmap_hash.trim().to_ascii_lowercase();
+
+    if normalized_name.is_empty() || normalized_hash.is_empty() {
+        return CollectionMutationPayload {
+            success: false,
+            error: Some("invalid_input".to_string()),
+        };
+    }
+
+    let mut db = match read_stable_collections_file(&path) {
+        Ok(db) => db,
+        Err(error) => {
+            let locked = fs::File::open(&path)
+                .err()
+                .is_some_and(|err| is_locked_io_error(&err));
+            return CollectionMutationPayload {
+                success: false,
+                error: Some(if locked { "file_locked".to_string() } else { error }),
+            };
+        }
+    };
+
+    let Some(collection) = db.collections.iter_mut().find(|collection| {
+        collection.name.eq_ignore_ascii_case(normalized_name)
+    }) else {
+        return CollectionMutationPayload {
+            success: false,
+            error: Some("collection not found".to_string()),
+        };
+    };
+
+    if collection
+        .beatmap_hashes
+        .iter()
+        .any(|hash| hash.eq_ignore_ascii_case(&normalized_hash))
+    {
+        return CollectionMutationPayload {
+            success: true,
+            error: None,
+        };
+    }
+
+    collection.beatmap_hashes.push(normalized_hash);
+    let bytes = match write_stable_collections_bytes(&db) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            return CollectionMutationPayload {
+                success: false,
+                error: Some(error),
+            };
+        }
+    };
+
+    match fs::OpenOptions::new()
+        .write(true)
+        .truncate(true)
+        .open(&path)
+    {
+        Ok(mut file) => {
+            if let Err(error) = file.write_all(&bytes) {
+                return CollectionMutationPayload {
+                    success: false,
+                    error: Some(if is_locked_io_error(&error) {
+                        "file_locked".to_string()
+                    } else {
+                        error.to_string()
+                    }),
+                };
+            }
+        }
+        Err(error) => {
+            return CollectionMutationPayload {
+                success: false,
+                error: Some(if is_locked_io_error(&error) {
+                    "file_locked".to_string()
+                } else {
+                    error.to_string()
+                }),
+            };
+        }
+    }
+
+    CollectionMutationPayload {
+        success: true,
+        error: None,
+    }
+}
+
+#[tauri::command]
+fn get_lazer_collections(data_root: Option<String>) -> Result<Vec<OsuCollectionPayload>, String> {
+    let exe = find_realm_resolver_exe()
+        .ok_or_else(|| "realm-resolver sidecar not found".to_string())?;
+
+    let mut command = Command::new(&exe);
+    if let Some(data_root) = data_root.as_ref().filter(|value| !value.trim().is_empty()) {
+        command.arg(data_root);
+    }
+    let output = command
+        .arg("list-collections")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .map_err(|err| format!("failed to run realm-resolver: {err}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("realm-resolver failed: {stderr}"));
+    }
+
+    serde_json::from_slice::<Vec<OsuCollectionPayload>>(&output.stdout)
+        .map_err(|err| format!("failed to parse lazer collections: {err}"))
+}
+
+#[tauri::command]
+fn add_to_lazer_collection(
+    data_root: Option<String>,
+    collection_name: String,
+    beatmap_hash: String,
+) -> CollectionMutationPayload {
+    let exe = match find_realm_resolver_exe() {
+        Some(exe) => exe,
+        None => {
+            return CollectionMutationPayload {
+                success: false,
+                error: Some("realm-resolver sidecar not found".to_string()),
+            };
+        }
+    };
+
+    let mut command = Command::new(&exe);
+    if let Some(data_root) = data_root.as_ref().filter(|value| !value.trim().is_empty()) {
+        command.arg(data_root);
+    }
+    let output = match command
+        .arg("add-to-collection")
+        .arg("--collection-name")
+        .arg(collection_name)
+        .arg("--beatmap-hash")
+        .arg(beatmap_hash)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output()
+    {
+        Ok(output) => output,
+        Err(error) => {
+            return CollectionMutationPayload {
+                success: false,
+                error: Some(error.to_string()),
+            };
+        }
+    };
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    if let Ok(payload) = serde_json::from_str::<CollectionMutationPayload>(&stdout) {
+        return payload;
+    }
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return CollectionMutationPayload {
+            success: false,
+            error: Some(if stderr.trim().is_empty() {
+                "realm-resolver failed".to_string()
+            } else {
+                stderr.trim().to_string()
+            }),
+        };
+    }
+
+    CollectionMutationPayload {
+        success: false,
+        error: Some("invalid_sidecar_response".to_string()),
+    }
+}
+
+#[tauri::command]
 fn show_item_in_folder(file_path: String) -> Result<(), String> {
     let path = PathBuf::from(&file_path);
     #[cfg(target_os = "windows")]
@@ -1754,12 +2228,14 @@ fn open_osu_file() -> Option<OpenOsuFilePayload> {
     let mut results: Vec<OsuFilePayload> = Vec::new();
     for path in files {
         let file_path = path.to_string_lossy().to_string();
-        if let Ok(content) = fs::read_to_string(&path) {
+        if let Ok(bytes) = fs::read(&path) {
             if let Ok(mtime_ms) = get_mtime_ms(&path) {
+                let content = String::from_utf8_lossy(&bytes).to_string();
                 results.push(OsuFilePayload {
                     file_path,
                     content,
                     stat: FileStatPayload { mtime_ms },
+                    beatmap_hash: Some(compute_osu_md5_hex(&bytes)),
                 });
             }
         }
@@ -2065,6 +2541,10 @@ fn main() {
             read_audio_file,
             read_osu_file,
             stat_file,
+            parse_stable_collections,
+            add_to_stable_collection,
+            get_lazer_collections,
+            add_to_lazer_collection,
             prepare_lazer_map_session,
             commit_lazer_map_session,
             show_item_in_folder,

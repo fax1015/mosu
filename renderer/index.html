@@ -225,8 +225,8 @@
             <p class="settings-description prompt-dialog-description" id="firstRunPromptDescription">Choose to import all
                 maps from your Songs folder, or only maps by a particular mapper.</p>
             <div class="prompt-dialog-actions">
-                <button type="button" class="secondary-button" id="firstRunAllBtn">Import all maps</button>
-                <button type="button" class="primary-button" id="firstRunMapperBtn">Only maps by a mapper</button>
+                <button type="button" class="secondary-button" id="firstRunMapperBtn">Only maps by a mapper</button>
+                <button type="button" class="primary-button" id="firstRunAllBtn">Import all maps</button>
             </div>
         </form>
     </dialog>
@@ -252,6 +252,32 @@
             <div class="prompt-dialog-actions">
                 <button type="button" class="secondary-button" id="songsDirPromptCancel">Cancel</button>
                 <button type="submit" class="primary-button" id="songsDirPromptConfirm">Select Folder</button>
+            </div>
+        </form>
+    </dialog>
+
+    <dialog class="prompt-dialog" id="collectionPickerDialog">
+        <form method="dialog" class="prompt-dialog-form">
+            <p class="prompt-dialog-label" id="collectionPickerTitle">Choose a collection</p>
+            <p class="settings-description prompt-dialog-description" id="collectionPickerDescription">Pick one of your osu! collections.</p>
+            <div class="sort-dropdown collections-target-dropdown" id="collectionPickerDropdown">
+                <button type="button" class="sort-trigger" id="collectionPickerTrigger" aria-expanded="false"
+                    aria-label="Choose collection">
+                    <span class="sort-label" id="collectionPickerLabel">No collection selected</span>
+                    <span class="sort-direction">
+                        <svg viewBox="0 0 448 512">
+                            <path
+                                d="M201.4 406.6c12.5 12.5 32.8 12.5 45.3 0l192-192c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0L224 338.7 54.6 169.4c-12.5-12.5-32.8-12.5-45.3 0s-12.5 32.8 0 45.3l192 192z" />
+                        </svg>
+                    </span>
+                </button>
+                <div class="sort-menu" id="collectionPickerMenu" role="menu">
+                    <button type="button" class="sort-option" data-value="" data-label="No collection selected">No collection selected</button>
+                </div>
+            </div>
+            <div class="prompt-dialog-actions">
+                <button type="button" class="secondary-button" id="collectionPickerCancel">Cancel</button>
+                <button type="submit" class="primary-button" id="collectionPickerConfirm">Import</button>
             </div>
         </form>
     </dialog>
@@ -461,6 +487,41 @@
                     </div>
                 </div>
             </div>
+            <div class="settings-section" id="collectionsSettingsSection">
+                <h3 class="settings-section-title">Collections</h3>
+                <div class="settings-item">
+                    <div class="settings-info">
+                        <p class="settings-label">Collection mode</p>
+                        <p class="settings-description">Sync your selected osu! collection to the Todo list. Manage list changes from osu! itself instead of inside mosu!.</p>
+                    </div>
+                    <label class="switch">
+                        <input type="checkbox" id="collectionsImportEnabled">
+                        <span class="slider"></span>
+                    </label>
+                </div>
+                <div class="settings-item settings-item--stacked" id="collectionsTargetSetting">
+                    <div class="settings-info">
+                        <p class="settings-label">Target collection</p>
+                        <p class="settings-description">Choose one of your existing osu! collections to link with your todo list.</p>
+                        <p class="settings-inline-warning">Adding maps to the collection only works while osu! is closed.</p>
+                    </div>
+                    <div class="sort-dropdown collections-target-dropdown" id="collectionsTargetDropdown">
+                        <button type="button" class="sort-trigger" id="collectionsTargetTrigger" aria-expanded="false"
+                            aria-label="Choose target collection">
+                            <span class="sort-label" id="collectionsTargetLabel">No collection selected</span>
+                            <span class="sort-direction">
+                                <svg viewBox="0 0 448 512">
+                                    <path
+                                        d="M201.4 406.6c12.5 12.5 32.8 12.5 45.3 0l192-192c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0L224 338.7 54.6 169.4c-12.5-12.5-32.8-12.5-45.3 0s-12.5 32.8 0 45.3l192 192z" />
+                                </svg>
+                            </span>
+                        </button>
+                        <div class="sort-menu" id="collectionsTargetMenu" role="menu">
+                            <button type="button" class="sort-option" data-value="" data-label="No collection selected">No collection selected</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
             <div class="settings-section">
                 <h3 class="settings-section-title">Embed Sync</h3>
                 <div class="settings-item">
@@ -647,6 +708,8 @@
                 </li>
                 <h4>fun animations</h4>
                 <li>- added some fun animations to the app</li>
+                <h4>collection mode</h4>
+                <li>- sync collections from your game to the app, use the game to change the list</li>
             </ul>
         </div>
     </dialog>

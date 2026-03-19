@@ -279,6 +279,7 @@ export const normalizeMetadata = (metadata) => ({
     durationMs: metadata?.durationMs ?? null,
     audio: metadata?.audio || '',
     audioFileName: metadata?.audioFileName || '',
+    beatmapHash: metadata?.beatmapHash || '',
     previewTime: metadata?.previewTime ?? -1,
     dateAdded: metadata?.dateAdded ?? 0,
     dateModified: metadata?.dateModified ?? 0,

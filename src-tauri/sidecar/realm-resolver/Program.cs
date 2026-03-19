@@ -1,47 +1,172 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Realms;
+using Realms.Exceptions;
 
-if (args.Length < 1)
+var invocation = ParseInvocation(args);
+if (invocation.ErrorMessage is not null)
 {
-    Console.Error.WriteLine("Usage: realm-resolver <data_root_or_realm_path> [--resolve-all | --manifest <beatmap_hash>]");
+    Console.Error.WriteLine(invocation.ErrorMessage);
     Environment.Exit(1);
     return;
 }
 
-var dataRoot = args[0];
-string realmPath;
-string filesRoot;
-
-if (File.Exists(dataRoot) && dataRoot.EndsWith(".realm", StringComparison.OrdinalIgnoreCase))
+if (!File.Exists(invocation.RealmPath))
 {
-    realmPath = dataRoot;
-    filesRoot = Path.Combine(Path.GetDirectoryName(dataRoot) ?? ".", "files");
-}
-else if (Directory.Exists(dataRoot))
-{
-    realmPath = Path.Combine(dataRoot, "client.realm");
-    filesRoot = Path.Combine(dataRoot, "files");
-}
-else
-{
-    Console.Error.WriteLine($"Path not found: {dataRoot}");
+    Console.Error.WriteLine($"Realm file not found: {invocation.RealmPath}");
     Environment.Exit(1);
     return;
 }
 
-if (!File.Exists(realmPath))
+try
 {
-    Console.Error.WriteLine($"Realm file not found: {realmPath}");
+    switch (invocation.Command)
+    {
+        case "resolve-all":
+            using (var realm = Realm.GetInstance(CreateConfig(invocation.RealmPath, isReadOnly: true, includeCollections: false)))
+            {
+                ResolveAll(realm, invocation.FilesRoot);
+            }
+            break;
+
+        case "manifest":
+            if (string.IsNullOrWhiteSpace(invocation.BeatmapHash))
+            {
+                Console.Error.WriteLine("Usage: realm-resolver [data_root_or_realm_path] manifest <beatmap_hash>");
+                Environment.Exit(1);
+                return;
+            }
+
+            using (var realm = Realm.GetInstance(CreateConfig(invocation.RealmPath, isReadOnly: true, includeCollections: false)))
+            {
+                WriteManifest(realm, invocation.FilesRoot, invocation.BeatmapHash);
+            }
+            break;
+
+        case "list-collections":
+            using (var realm = Realm.GetInstance(CreateConfig(invocation.RealmPath, isReadOnly: true, includeCollections: true)))
+            {
+                WriteCollections(realm);
+            }
+            break;
+
+        case "add-to-collection":
+            if (string.IsNullOrWhiteSpace(invocation.CollectionName) || string.IsNullOrWhiteSpace(invocation.BeatmapHash))
+            {
+                Console.WriteLine(JsonSerializer.Serialize(new MutationResult
+                {
+                    Success = false,
+                    Error = "invalid_input",
+                }));
+                return;
+            }
+
+            try
+            {
+                using var realm = Realm.GetInstance(CreateConfig(invocation.RealmPath, isReadOnly: false, includeCollections: true));
+                WriteAddToCollectionResult(realm, invocation.CollectionName, invocation.BeatmapHash);
+            }
+            catch (RealmInUseException)
+            {
+                Console.WriteLine(JsonSerializer.Serialize(new MutationResult
+                {
+                    Success = false,
+                    Error = "realm_locked",
+                }));
+            }
+            catch (IOException ioEx) when (IsLockedException(ioEx))
+            {
+                Console.WriteLine(JsonSerializer.Serialize(new MutationResult
+                {
+                    Success = false,
+                    Error = "realm_locked",
+                }));
+            }
+            break;
+
+        default:
+            Console.Error.WriteLine($"Unknown command: {invocation.Command}");
+            Environment.Exit(1);
+            break;
+    }
+}
+catch (Exception ex)
+{
+    Console.Error.WriteLine(ex.Message);
     Environment.Exit(1);
-    return;
 }
 
-var config = new RealmConfiguration(realmPath)
+static Invocation ParseInvocation(string[] args)
 {
-    IsReadOnly = true,
-    SchemaVersion = 51,
-    Schema = new[]
+    if (args.Length == 0)
+    {
+        return new Invocation
+        {
+            ErrorMessage = "Usage: realm-resolver [data_root_or_realm_path] <resolve-all|manifest|list-collections|add-to-collection> [args]",
+        };
+    }
+
+    var firstArg = args[0];
+    var hasExplicitPath =
+        File.Exists(firstArg) ||
+        Directory.Exists(firstArg) ||
+        firstArg.EndsWith(".realm", StringComparison.OrdinalIgnoreCase);
+
+    var dataRoot = hasExplicitPath ? firstArg : GetDefaultLazerDataRoot();
+    if (string.IsNullOrWhiteSpace(dataRoot))
+    {
+        return new Invocation
+        {
+            ErrorMessage = "Could not determine osu!lazer data folder.",
+        };
+    }
+
+    var realmPath = File.Exists(dataRoot) && dataRoot.EndsWith(".realm", StringComparison.OrdinalIgnoreCase)
+        ? dataRoot
+        : Path.Combine(dataRoot, "client.realm");
+    var filesRoot = File.Exists(dataRoot) && dataRoot.EndsWith(".realm", StringComparison.OrdinalIgnoreCase)
+        ? Path.Combine(Path.GetDirectoryName(dataRoot) ?? ".", "files")
+        : Path.Combine(dataRoot, "files");
+
+    var commandIndex = hasExplicitPath ? 1 : 0;
+    var command = commandIndex < args.Length ? NormalizeCommand(args[commandIndex]) : "resolve-all";
+    var remainingArgs = args.Skip(commandIndex + 1).ToArray();
+
+    var invocation = new Invocation
+    {
+        RealmPath = realmPath,
+        FilesRoot = filesRoot,
+        Command = command,
+    };
+
+    switch (command)
+    {
+        case "manifest":
+            invocation.BeatmapHash = remainingArgs.FirstOrDefault();
+            break;
+
+        case "add-to-collection":
+            for (var i = 0; i < remainingArgs.Length; i++)
+            {
+                switch (remainingArgs[i])
+                {
+                    case "--collection-name" when i + 1 < remainingArgs.Length:
+                        invocation.CollectionName = remainingArgs[++i];
+                        break;
+                    case "--beatmap-hash" when i + 1 < remainingArgs.Length:
+                        invocation.BeatmapHash = remainingArgs[++i];
+                        break;
+                }
+            }
+            break;
+    }
+
+    return invocation;
+}
+
+static RealmConfiguration CreateConfig(string realmPath, bool isReadOnly, bool includeCollections)
+{
+    var schema = new List<Type>
     {
         typeof(RealmFile),
         typeof(RealmNamedFileUsage),
@@ -52,32 +177,46 @@ var config = new RealmConfiguration(realmPath)
         typeof(BeatmapMetadata),
         typeof(BeatmapInfo),
         typeof(BeatmapSetInfo),
-    },
-};
+    };
 
-using var realm = Realm.GetInstance(config);
-
-var command = args.Length > 1 ? args[1] : "--resolve-all";
-
-if (string.Equals(command, "--resolve-all", StringComparison.OrdinalIgnoreCase))
-{
-    ResolveAll(realm, filesRoot);
-}
-else if (string.Equals(command, "--manifest", StringComparison.OrdinalIgnoreCase))
-{
-    if (args.Length < 3)
+    if (includeCollections)
     {
-        Console.Error.WriteLine("Usage: realm-resolver <data_root_or_realm_path> --manifest <beatmap_hash>");
-        Environment.Exit(1);
-        return;
+        schema.Add(typeof(BeatmapCollection));
+        schema.Add(typeof(BeatmapCollectionItem));
     }
 
-    WriteManifest(realm, filesRoot, args[2]);
+    return new RealmConfiguration(realmPath)
+    {
+        IsReadOnly = isReadOnly,
+        SchemaVersion = 51,
+        Schema = schema,
+    };
 }
-else
+
+static string NormalizeCommand(string rawCommand)
 {
-    Console.Error.WriteLine($"Unknown command: {command}");
-    Environment.Exit(1);
+    var command = rawCommand.Trim();
+    if (command.StartsWith("--", StringComparison.Ordinal))
+    {
+        command = command[2..];
+    }
+
+    return command switch
+    {
+        "resolve-all" => "resolve-all",
+        "manifest" => "manifest",
+        "list-collections" => "list-collections",
+        "add-to-collection" => "add-to-collection",
+        _ => command,
+    };
+}
+
+static string GetDefaultLazerDataRoot()
+{
+    var appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+    return string.IsNullOrWhiteSpace(appData)
+        ? string.Empty
+        : Path.Combine(appData, "osu");
 }
 
 static void ResolveAll(Realm realm, string filesRoot)
@@ -176,6 +315,61 @@ static void WriteManifest(Realm realm, string filesRoot, string beatmapHash)
     }, opts));
 }
 
+static void WriteCollections(Realm realm)
+{
+    var collections = realm.All<BeatmapCollection>()
+        .Where(collection => !collection.DeletePending)
+        .ToArray()
+        .OrderBy(collection => collection.Name, StringComparer.OrdinalIgnoreCase)
+        .Select(collection => new CollectionEntry
+        {
+            Name = collection.Name,
+            BeatmapHashes = collection.BeatmapMD5Hashes
+                .Select(item => (item.BeatmapMD5 ?? string.Empty).Trim().ToLowerInvariant())
+                .Where(hash => !string.IsNullOrWhiteSpace(hash))
+                .ToArray(),
+        })
+        .ToArray();
+
+    Console.WriteLine(JsonSerializer.Serialize(collections));
+}
+
+static void WriteAddToCollectionResult(Realm realm, string collectionName, string beatmapHash)
+{
+    var normalizedHash = beatmapHash.Trim().ToLowerInvariant();
+    var collection = realm.All<BeatmapCollection>()
+        .FirstOrDefault(entry => entry.Name.Equals(collectionName, StringComparison.OrdinalIgnoreCase) && !entry.DeletePending);
+
+    if (collection == null)
+    {
+        Console.WriteLine(JsonSerializer.Serialize(new MutationResult
+        {
+            Success = false,
+            Error = "collection not found",
+        }));
+        return;
+    }
+
+    var alreadyExists = collection.BeatmapMD5Hashes
+        .Any(item => string.Equals(item.BeatmapMD5, normalizedHash, StringComparison.OrdinalIgnoreCase));
+
+    if (!alreadyExists)
+    {
+        realm.Write(() =>
+        {
+            collection.BeatmapMD5Hashes.Add(new BeatmapCollectionItem
+            {
+                BeatmapMD5 = normalizedHash,
+            });
+        });
+    }
+
+    Console.WriteLine(JsonSerializer.Serialize(new MutationResult
+    {
+        Success = true,
+    }));
+}
+
 static RealmNamedFileUsage? FindUsage(BeatmapSetInfo set, string filename)
 {
     if (string.IsNullOrWhiteSpace(filename)) return null;
@@ -186,6 +380,24 @@ static RealmNamedFileUsage? FindUsage(BeatmapSetInfo set, string filename)
 static string HashedStorePath(string filesRoot, string hash)
 {
     return Path.Combine(filesRoot, hash[..1], hash[..2], hash);
+}
+
+static bool IsLockedException(IOException exception)
+{
+    var message = exception.Message.ToLowerInvariant();
+    return message.Contains("being used by another process")
+        || message.Contains("sharing violation")
+        || message.Contains("locked");
+}
+
+file sealed class Invocation
+{
+    public string RealmPath { get; set; } = string.Empty;
+    public string FilesRoot { get; set; } = string.Empty;
+    public string Command { get; set; } = "resolve-all";
+    public string? BeatmapHash { get; set; }
+    public string? CollectionName { get; set; }
+    public string? ErrorMessage { get; set; }
 }
 
 file sealed class ResolvedEntry
@@ -221,6 +433,25 @@ file sealed class ManifestFileEntry
     public string P { get; set; } = string.Empty;
 }
 
+file sealed class CollectionEntry
+{
+    [JsonPropertyName("name")]
+    public string Name { get; set; } = string.Empty;
+
+    [JsonPropertyName("beatmapHashes")]
+    public IEnumerable<string> BeatmapHashes { get; set; } = Array.Empty<string>();
+}
+
+file sealed class MutationResult
+{
+    [JsonPropertyName("success")]
+    public bool Success { get; set; }
+
+    [JsonPropertyName("error")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Error { get; set; }
+}
+
 [MapTo("File")]
 public partial class RealmFile : RealmObject
 {
@@ -228,7 +459,7 @@ public partial class RealmFile : RealmObject
     public string Hash { get; set; } = string.Empty;
 
     [Backlink(nameof(RealmNamedFileUsage.File))]
-    public IQueryable<RealmNamedFileUsage> Usages { get; }
+    public IQueryable<RealmNamedFileUsage> Usages { get; } = null!;
 }
 
 public partial class RealmNamedFileUsage : EmbeddedObject
@@ -292,7 +523,7 @@ public partial class BeatmapMetadata : RealmObject
     public RealmUser Author { get; set; } = null!;
     public string Source { get; set; } = string.Empty;
     public string Tags { get; set; } = string.Empty;
-    public IList<string> UserTags { get; }
+    public IList<string> UserTags { get; } = null!;
     public int PreviewTime { get; set; } = -1;
     public string AudioFile { get; set; } = string.Empty;
     public string BackgroundFile { get; set; } = string.Empty;
@@ -348,8 +579,8 @@ public partial class BeatmapSetInfo : RealmObject
     public DateTimeOffset DateAdded { get; set; }
     public DateTimeOffset? DateSubmitted { get; set; }
     public DateTimeOffset? DateRanked { get; set; }
-    public IList<BeatmapInfo> Beatmaps { get; }
-    public IList<RealmNamedFileUsage> Files { get; }
+    public IList<BeatmapInfo> Beatmaps { get; } = null!;
+    public IList<RealmNamedFileUsage> Files { get; } = null!;
 
     [MapTo("Status")]
     public int StatusInt { get; set; }
@@ -357,4 +588,23 @@ public partial class BeatmapSetInfo : RealmObject
     public bool DeletePending { get; set; }
     public string Hash { get; set; } = string.Empty;
     public bool Protected { get; set; }
+}
+
+[MapTo("BeatmapCollection")]
+public partial class BeatmapCollection : RealmObject
+{
+    [PrimaryKey]
+    public Guid ID { get; set; }
+
+    [Indexed]
+    public string Name { get; set; } = string.Empty;
+
+    public IList<BeatmapCollectionItem> BeatmapMD5Hashes { get; } = null!;
+
+    public bool DeletePending { get; set; }
+}
+
+public partial class BeatmapCollectionItem : EmbeddedObject
+{
+    public string BeatmapMD5 { get; set; } = string.Empty;
 }

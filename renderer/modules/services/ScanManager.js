@@ -69,6 +69,7 @@ const formatStatusLabel = ({ stage, current = 0, total = 0, discoveredFiles } = 
  * @param {Function} callbacks.renderFromState - Function to render from state
  * @param {Function} callbacks.saveToStorage - Function to save to storage
  * @param {Function} callbacks.processBackgroundQueues - Function to process background queues
+ * @param {Function} callbacks.onScanComplete - Called after scan results are committed
  * @returns {Promise<boolean>} Whether listeners were initialized
  */
 export const initScanEventListeners = async (callbacks = {}) => {
@@ -205,6 +206,11 @@ export const initScanEventListeners = async (callbacks = {}) => {
         }
         if (callbacks.setLoading) {
             callbacks.setLoading(false);
+        }
+        if (callbacks.onScanComplete) {
+            Promise.resolve(callbacks.onScanComplete(items)).catch((error) => {
+                console.error('onScanComplete failed:', error);
+            });
         }
 
         if (streamingScanState.resolveComplete) {

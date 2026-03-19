@@ -113,7 +113,8 @@ export async function loadBeatmapFromDialog(callbacks) {
                 file.filePath,
                 file.content,
                 file.stat,
-                null
+                null,
+                file.beatmapHash || ''
             );
             items.push(item);
         }
@@ -182,7 +183,8 @@ export async function refreshLastDirectory(callbacks = {}) {
         // Build knownFiles cache (path -> mtime)
         const knownFiles = {};
         beatmapItems.forEach(item => {
-            if (item.filePath) {
+            const hasKnownHash = getActiveOsuClient() === 'lazer' || !!String(item.beatmapHash || '').trim();
+            if (item.filePath && hasKnownHash) {
                 knownFiles[item.filePath] = item.dateModified;
             }
         });

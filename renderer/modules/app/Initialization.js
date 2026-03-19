@@ -20,6 +20,7 @@ import { renderFromState, updateTabCounts, updateListItemElement, setLoading, up
 import { initEventDelegation } from '../interaction/EventDelegation.js';
 import { initSearch, clearSearch } from '../interaction/SearchHandler.js';
 import { AudioController } from '../services/AudioController.js';
+import * as CollectionsManager from '../services/CollectionsManager.js';
 import { openLazerSessionForAction } from '../services/LazerEditSession.js';
 import { initMapPreview, openMapPreview } from '../services/MapPreview.js';
 import { initScanEventListeners, startStreamingScan } from '../services/ScanManager.js';
@@ -68,6 +69,9 @@ let modeFilterDropdownMenu = null;
 /** @type {Object|null} Upload dropdown controller */
 let uploadDropdownMenu = null;
 
+/** @type {Object|null} Startup collection picker dropdown controller */
+let collectionPickerDropdownMenu = null;
+
 /** @type {boolean} Suppress repeated startup songs-dir prompts after a cancel */
 let suppressStartupSongsDirPrompt = false;
 
@@ -103,6 +107,93 @@ const getClientImportDescription = (client = getActiveOsuClient()) => (
         ? 'Choose to import all maps from your lazer data folder, or only maps by a particular mapper.'
         : 'Choose to import all maps from your Songs folder, or only maps by a particular mapper.'
 );
+
+const normalizeCollectionSyncState = () => {
+    if (!Store.settings.collectionsImportEnabled) {
+        return false;
+    }
+
+    let changed = false;
+
+    if (Store.doneIds.length > 0) {
+        const nextTodoIds = [...Store.todoIds];
+        for (const id of Store.doneIds) {
+            if (!nextTodoIds.includes(id)) {
+                nextTodoIds.push(id);
+            }
+        }
+        Store.setTodoIds(nextTodoIds);
+        Store.setDoneIds([]);
+        changed = true;
+    }
+
+    if (Store.viewMode === 'completed') {
+        Store.updateState('viewMode', 'todo');
+        changed = true;
+    }
+
+    if (changed) {
+        Persistence.scheduleSave();
+    }
+
+    return changed;
+};
+
+const saveCollectionModeSnapshot = () => {
+    Store.updateSettings({
+        collectionModeSavedTodoIds: [...Store.todoIds],
+        collectionModeSavedDoneIds: [...Store.doneIds],
+        collectionModeSavedViewMode: Store.viewMode,
+    });
+    Persistence.persistSettings();
+};
+
+const clearCollectionModeSnapshot = () => {
+    Store.updateSettings({
+        collectionModeSavedTodoIds: null,
+        collectionModeSavedDoneIds: null,
+        collectionModeSavedViewMode: null,
+    });
+    Persistence.persistSettings();
+};
+
+const restoreCollectionModeSnapshot = () => {
+    const savedTodoIds = Array.isArray(Store.settings.collectionModeSavedTodoIds)
+        ? [...Store.settings.collectionModeSavedTodoIds]
+        : null;
+    const savedDoneIds = Array.isArray(Store.settings.collectionModeSavedDoneIds)
+        ? [...Store.settings.collectionModeSavedDoneIds]
+        : null;
+    const savedViewMode = Store.settings.collectionModeSavedViewMode;
+
+    if (!savedTodoIds && !savedDoneIds && !savedViewMode) {
+        return false;
+    }
+
+    Store.setTodoIds(savedTodoIds || []);
+    Store.setDoneIds(savedDoneIds || []);
+    if (savedViewMode === 'all' || savedViewMode === 'todo' || savedViewMode === 'completed') {
+        Store.updateState('viewMode', savedViewMode);
+    }
+    clearCollectionModeSnapshot();
+    Persistence.saveToStorage({ showNotification });
+    return true;
+};
+
+const syncCollectionModeTabs = () => {
+    const completedTabButton = document.querySelector('.tab-button[data-tab="completed"]');
+    const isCollectionSyncMode = !!Store.settings.collectionsImportEnabled;
+    if (completedTabButton) {
+        completedTabButton.hidden = isCollectionSyncMode;
+        completedTabButton.classList.toggle('is-hidden', isCollectionSyncMode);
+        completedTabButton.setAttribute('aria-hidden', String(isCollectionSyncMode));
+    }
+
+    document.querySelectorAll('.tab-button').forEach((button) => {
+        const isActive = !button.hidden && button.dataset.tab === Store.viewMode;
+        button.classList.toggle('is-active', isActive);
+    });
+};
 
 const getClientDirectoryDialogTitle = (client = getActiveOsuClient()) => (
     client === CLIENT_LAZER ? 'Select the osu!lazer data folder' : 'Select the osu! Songs folder'
@@ -200,6 +291,39 @@ export const loadSettings = () => {
                 ? (parsed.lazerDataDir || null)
                 : (parsed.stableSongsDir || null);
 
+            if (typeof parsed.collectionsImportEnabled !== 'boolean') {
+                parsed.collectionsImportEnabled = false;
+            }
+            if (typeof parsed.collectionsWriteEnabled !== 'boolean') {
+                parsed.collectionsWriteEnabled = false;
+            }
+            parsed.collectionsWriteEnabled = !!parsed.collectionsImportEnabled;
+            if (parsed.stableImportedCollectionName === undefined) {
+                parsed.stableImportedCollectionName = null;
+            }
+            if (parsed.stableImportedCollectionSignature === undefined) {
+                parsed.stableImportedCollectionSignature = null;
+            }
+            if (parsed.lazerImportedCollectionName === undefined) {
+                parsed.lazerImportedCollectionName = null;
+            }
+            if (parsed.lazerImportedCollectionSignature === undefined) {
+                parsed.lazerImportedCollectionSignature = null;
+            }
+            if (!Array.isArray(parsed.collectionModeSavedTodoIds)) {
+                parsed.collectionModeSavedTodoIds = null;
+            }
+            if (!Array.isArray(parsed.collectionModeSavedDoneIds)) {
+                parsed.collectionModeSavedDoneIds = null;
+            }
+            if (
+                parsed.collectionModeSavedViewMode !== 'all' &&
+                parsed.collectionModeSavedViewMode !== 'todo' &&
+                parsed.collectionModeSavedViewMode !== 'completed'
+            ) {
+                parsed.collectionModeSavedViewMode = null;
+            }
+
             Store.updateSettings(parsed);
             syncActiveClientDirectory(true);
             const height = 170; // Forced to 170px
@@ -226,6 +350,7 @@ export const loadSettings = () => {
  * Updates all settings-related UI components
  */
 export const applySettings = () => {
+    const didNormalizeCollectionSync = normalizeCollectionSyncState();
     syncActiveClientDirectory();
     updateClientUiCopy();
 
@@ -238,6 +363,10 @@ export const applySettings = () => {
     const mapperRescanConfig = document.querySelector('#mapperRescanConfig');
     const linkedAliasesContainer = document.querySelector('#linkedAliasesContainer');
     const linkedAliasesList = document.querySelector('#linkedAliasesList');
+    const collectionsImportToggle = document.querySelector('#collectionsImportEnabled');
+    const collectionsTargetSetting = document.querySelector('#collectionsTargetSetting');
+    const collectionsTargetDropdown = document.querySelector('#collectionsTargetDropdown');
+    const collectionsTargetTrigger = document.querySelector('#collectionsTargetTrigger');
 
     if (autoRescan) autoRescan.checked = !!Store.settings.autoRescan;
 
@@ -340,6 +469,20 @@ export const applySettings = () => {
     const groupMapsBySongEl = document.querySelector('#groupMapsBySong');
     if (groupMapsBySongEl) groupMapsBySongEl.checked = !!Store.settings.groupMapsBySong;
 
+    if (collectionsImportToggle) collectionsImportToggle.checked = !!Store.settings.collectionsImportEnabled;
+    if (collectionsTargetSetting) collectionsTargetSetting.hidden = !Store.settings.collectionsImportEnabled;
+    if (collectionsTargetDropdown) {
+        collectionsTargetDropdown.classList.toggle('is-disabled', !Store.settings.collectionsImportEnabled);
+    }
+    if (collectionsTargetTrigger) {
+        collectionsTargetTrigger.disabled = !Store.settings.collectionsImportEnabled;
+    }
+
+    syncCollectionModeTabs();
+    if (didNormalizeCollectionSync) {
+        updateTabCounts();
+    }
+
     if (modeFilterDropdownMenu) modeFilterDropdownMenu.setValue(Store.modeFilter || 'all');
 };
 
@@ -356,6 +499,9 @@ export const initTabs = () => {
     tabButtons.forEach(btn => {
         btn.addEventListener('click', () => {
             const tab = btn.dataset.tab;
+            if (Store.settings.collectionsImportEnabled && tab === 'completed') {
+                return;
+            }
             if (tab === Store.viewMode) return;
             Store.updateState('viewMode', tab);
             tabButtons.forEach(b => b.classList.toggle('is-active', b.dataset.tab === Store.viewMode));
@@ -657,15 +803,24 @@ export const initSettingsPanel = (callbacks = {}) => {
 
     // Settings Listeners
     if (settingsBtn && settingsDialog) {
-        settingsBtn.addEventListener('click', () => {
+        settingsBtn.addEventListener('click', async () => {
             applySettings();
+            CollectionsManager.configureTargetCollectionSelect(callbacks);
             settingsDialog.showModal();
+            await CollectionsManager.refreshTargetCollectionOptions({ silent: true });
         });
     }
     if (closeSettingsBtn && settingsDialog) {
         closeSettingsBtn.addEventListener('click', () => closeDialogWithAnimation(settingsDialog));
     }
     bindBackdropClose(settingsDialog);
+    if (settingsDialog) {
+        settingsDialog.addEventListener('close', () => {
+            applySettings();
+            CollectionsManager.syncCollectionImportOption(callbacks);
+            renderFromState();
+        });
+    }
     bindBackdropClose(document.querySelector('#clearAllPrompt'));
     bindBackdropClose(document.querySelector('#clientPrompt'));
     bindBackdropClose(document.querySelector('#mapperPrompt'));
@@ -864,6 +1019,13 @@ export const initSettingsPanel = (callbacks = {}) => {
                     setClientDirectory(dir);
                     Persistence.persistSettings();
                     applySettings();
+                    await CollectionsManager.refreshTargetCollectionOptions({ silent: true });
+                    if (Store.settings.collectionsImportEnabled) {
+                        await CollectionsManager.refreshCollectionModeList(callbacks, {
+                            skipSync: true,
+                            silent: true,
+                        });
+                    }
                     showNotification('Directory Set', `${getClientDisplayName()} folder has been updated.`, 'success');
                 }
             }
@@ -887,12 +1049,66 @@ export const initSettingsPanel = (callbacks = {}) => {
             updateTabCounts();
             renderFromState();
             Persistence.saveToStorage({ showNotification });
+            await CollectionsManager.refreshTargetCollectionOptions({ silent: true, client: nextClient });
+            if (Store.settings.collectionsImportEnabled) {
+                await CollectionsManager.refreshCollectionModeList(callbacks, {
+                    client: nextClient,
+                    forceCollectionsRefresh: true,
+                    silent: true,
+                });
+            }
 
             if (activeDir && callbacks.refreshLastDirectory) {
                 await callbacks.refreshLastDirectory(callbacks);
             }
         });
     });
+
+    const collectionsImportToggle = document.getElementById('collectionsImportEnabled');
+    if (collectionsImportToggle) {
+        collectionsImportToggle.addEventListener('change', async (event) => {
+            const enabled = event.target.checked;
+            const wasEnabled = !!Store.settings.collectionsImportEnabled;
+
+            if (enabled && !wasEnabled) {
+                saveCollectionModeSnapshot();
+            }
+
+            Store.updateSettings({
+                collectionsImportEnabled: enabled,
+                collectionsWriteEnabled: enabled,
+            });
+            Persistence.persistSettings();
+
+            if (enabled) {
+                normalizeCollectionSyncState();
+                applySettings();
+                updateTabCounts();
+                CollectionsManager.syncCollectionImportOption(callbacks);
+                CollectionsManager.configureTargetCollectionSelect(callbacks);
+                await CollectionsManager.refreshTargetCollectionOptions({ silent: true });
+                await CollectionsManager.refreshCollectionModeList(callbacks, {
+                    forceCollectionsRefresh: true,
+                    silent: true,
+                });
+            } else {
+                const restoredSnapshot = restoreCollectionModeSnapshot();
+                applySettings();
+                updateTabCounts();
+                CollectionsManager.syncCollectionImportOption(callbacks);
+                if (!restoredSnapshot) {
+                    await CollectionsManager.refreshCollectionModeList(callbacks, {
+                        skipSync: true,
+                        silent: true,
+                    });
+                    if (callbacks.refreshLastDirectory && Store.settings.songsDir) {
+                        await callbacks.refreshLastDirectory(callbacks);
+                    }
+                }
+            }
+            renderFromState();
+        });
+    }
 
     // Generic Setting Toggles
     ['autoRescan', 'ignoreStartAndBreaks', 'ignoreGuestDifficulties'].forEach(id => {
@@ -1154,6 +1370,126 @@ export const initFirstRunWizard = async (callbacks = {}) => {
     const firstRunDialog = document.querySelector('#firstRunPrompt');
     const songsDirDialog = document.querySelector('#songsDirPrompt');
     const mapperDialog = document.querySelector('#mapperPrompt');
+    const collectionDialog = document.querySelector('#collectionPickerDialog');
+
+    const promptForStartupCollectionSync = async () => {
+        if (!Store.settings.songsDir || !collectionDialog) {
+            return;
+        }
+
+        let collections = [];
+        try {
+            collections = await CollectionsManager.loadCollectionsForClient({
+                client: getActiveOsuClient(),
+                force: true,
+            });
+        } catch (error) {
+            console.error('Unable to load collections during startup:', error);
+            return;
+        }
+
+        if (!Array.isArray(collections) || collections.length === 0) {
+            return;
+        }
+
+        await new Promise((resolve) => {
+            const title = document.querySelector('#collectionPickerTitle');
+            const description = document.querySelector('#collectionPickerDescription');
+            const dropdown = document.querySelector('#collectionPickerDropdown');
+            const menu = document.querySelector('#collectionPickerMenu');
+            const cancelBtn = document.querySelector('#collectionPickerCancel');
+            const confirmBtn = document.querySelector('#collectionPickerConfirm');
+            let selectedCollectionName = '';
+
+            if (!dropdown || !menu || !cancelBtn || !confirmBtn) {
+                resolve();
+                return;
+            }
+
+            if (title) title.textContent = 'Sync a collection too?';
+            if (description) {
+                description.textContent = 'Optional: pick one of your existing osu! collections to link with your Todo list. Manage list changes from osu! itself instead of inside mosu!.';
+            }
+            cancelBtn.textContent = 'Skip';
+            confirmBtn.textContent = 'Sync collection';
+
+            menu.replaceChildren(...collections.map((collection) => {
+                const button = document.createElement('button');
+                button.type = 'button';
+                button.className = 'sort-option';
+                button.dataset.value = collection.name;
+                button.dataset.label = collection.name;
+                button.textContent = collection.name;
+                return button;
+            }));
+
+            const currentName = Store.settings[
+                getActiveOsuClient() === CLIENT_LAZER ? 'lazerImportedCollectionName' : 'stableImportedCollectionName'
+            ] || '';
+            selectedCollectionName = collections.some((collection) => collection.name === currentName)
+                ? currentName
+                : collections[0]?.name || '';
+
+            if (collectionPickerDropdownMenu) {
+                collectionPickerDropdownMenu.destroy();
+                collectionPickerDropdownMenu = null;
+            }
+
+            collectionPickerDropdownMenu = createDropdownMenu({
+                root: dropdown,
+                valueAttribute: 'value',
+                onChange: ({ value }) => {
+                    selectedCollectionName = value || '';
+                }
+            });
+            collectionPickerDropdownMenu?.setValue(selectedCollectionName);
+
+            const cleanup = async () => {
+                await closeDialogWithAnimation(collectionDialog);
+                collectionPickerDropdownMenu?.destroy();
+                collectionPickerDropdownMenu = null;
+                if (title) title.textContent = 'Choose a collection';
+                if (description) description.textContent = 'Pick one of your osu! collections.';
+                cancelBtn.textContent = 'Cancel';
+                confirmBtn.textContent = 'Import';
+                collectionDialog.removeEventListener('submit', onSubmit);
+                cancelBtn.removeEventListener('click', onCancel);
+                collectionDialog.removeEventListener('cancel', onCancel);
+                resolve();
+            };
+
+            const onCancel = async () => {
+                CollectionsManager.updateCollectionSyncConfiguration({
+                    enabled: false,
+                    client: getActiveOsuClient(),
+                });
+                applySettings();
+                CollectionsManager.syncCollectionImportOption(callbacks);
+                renderFromState();
+                await cleanup();
+            };
+
+            const onSubmit = async (event) => {
+                event.preventDefault();
+                CollectionsManager.updateCollectionSyncConfiguration({
+                    enabled: true,
+                    collectionName: selectedCollectionName || collections[0]?.name || '',
+                    client: getActiveOsuClient(),
+                });
+                applySettings();
+                CollectionsManager.configureTargetCollectionSelect(callbacks);
+                await CollectionsManager.refreshTargetCollectionOptions({ silent: true });
+                CollectionsManager.syncCollectionImportOption(callbacks);
+                renderFromState();
+                await cleanup();
+            };
+
+            collectionDialog.showModal();
+            cancelBtn.addEventListener('click', onCancel, { once: true });
+            collectionDialog.addEventListener('submit', onSubmit, { once: true });
+            collectionDialog.addEventListener('cancel', onCancel, { once: true });
+        });
+    };
 
     // Show welcome greeting first
     if (welcomeDialog) {
@@ -1275,6 +1611,8 @@ export const initFirstRunWizard = async (callbacks = {}) => {
                 });
             }
 
+            await promptForStartupCollectionSync();
+
             if (Store.settings.songsDir && callbacks.refreshLastDirectory) {
                 await callbacks.refreshLastDirectory(callbacks);
             }
@@ -1366,6 +1704,8 @@ export const initFirstRunWizard = async (callbacks = {}) => {
                     mapperDialog.addEventListener('cancel', onCancel, { once: true });
                 });
             }
+
+            await promptForStartupCollectionSync();
 
             if (Store.settings.songsDir && Store.settings.rescanMapperName && callbacks.refreshLastDirectory) {
                 await callbacks.refreshLastDirectory(callbacks);
@@ -1699,7 +2039,14 @@ export const init = async (callbacks = {}) => {
         updateTabCounts,
         renderFromState,
         saveToStorage: () => Persistence.saveToStorage({ showNotification }),
-        processBackgroundQueues: () => callbacks.processBackgroundQueues(callbacks)
+        processBackgroundQueues: () => callbacks.processBackgroundQueues(callbacks),
+        onScanComplete: async () => {
+            await CollectionsManager.syncImportedCollection(callbacks, {
+                forceCollectionsRefresh: true,
+                reapply: true,
+                silent: true,
+            });
+        }
     });
 
     // Load from storage
@@ -1719,10 +2066,17 @@ export const init = async (callbacks = {}) => {
         processBackgroundQueues: () => callbacks.processBackgroundQueues(callbacks)
     });
 
+    if (normalizeCollectionSyncState()) {
+        updateTabCounts();
+    }
+
     // Initialize event delegation with proper callbacks
     initEventDelegation({
         get viewMode() { return Store.viewMode; },
         toggleTodo: (itemId) => {
+            if (Store.settings.collectionsImportEnabled) {
+                return;
+            }
             const wasPinned = Store.todoIds.includes(itemId);
             if (wasPinned) {
                 Store.setTodoIds(Store.todoIds.filter(id => id !== itemId));
@@ -1744,6 +2098,9 @@ export const init = async (callbacks = {}) => {
             }
         },
         toggleDone: (itemId) => {
+            if (Store.settings.collectionsImportEnabled) {
+                return;
+            }
             const wasDone = Store.doneIds.includes(itemId);
             if (wasDone) {
                 Store.setDoneIds(Store.doneIds.filter(id => id !== itemId));
@@ -1799,6 +2156,9 @@ export const init = async (callbacks = {}) => {
         },
         openMapPreview: (itemId) => {
             openMapPreview(itemId);
+        },
+        addToCollection: async (itemId) => {
+            await CollectionsManager.promptAddBeatmapToCollection(itemId, callbacks);
         }
     });
 
@@ -1836,6 +2196,8 @@ export const init = async (callbacks = {}) => {
 
     // Initialize import buttons
     initImportButtons(callbacks);
+    CollectionsManager.syncCollectionImportOption(callbacks);
+    CollectionsManager.initCollectionModeAutoRefresh(callbacks);
 
     // Initialize toolbar
     initToolbar(callbacks);
@@ -1863,6 +2225,10 @@ export const init = async (callbacks = {}) => {
 
     // Initial render
     renderFromState();
+    await CollectionsManager.syncImportedCollection(callbacks, {
+        forceCollectionsRefresh: true,
+        silent: true,
+    });
 
     // Run first-run wizard if needed
     await initFirstRunWizard(callbacks);

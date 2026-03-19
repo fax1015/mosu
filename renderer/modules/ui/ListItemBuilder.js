@@ -9,6 +9,7 @@ import { AudioController } from '../services/AudioController.js';
 import { scheduleCoverLoad } from '../services/CoverLoader.js';
 import { applyTimelineToBox } from '../services/TimelineRenderer.js';
 import { beatmapApi } from '../bridge/Tauri.js';
+import { settings } from '../state/Store.js';
 
 // ============================================
 // Constants
@@ -39,6 +40,7 @@ export const buildListItem = (metadata, index, callbacks) => {
     const isTodoTab = callbacks.viewMode === 'todo';
     const isCompletedTab = callbacks.viewMode === 'completed';
     const isAllTab = callbacks.viewMode === 'all';
+    const isCollectionSyncMode = !!(callbacks.settings?.collectionsImportEnabled ?? settings.collectionsImportEnabled);
     const listBox = document.createElement('div');
     listBox.classList.add('list-box');
     listBox.style.setProperty('--i', index);
@@ -335,33 +337,36 @@ export const buildListItem = (metadata, index, callbacks) => {
         window.addEventListener('mouseup', onMouseUp);
     });
 
-    const pinBtn = document.createElement('button');
-    pinBtn.type = 'button';
-    pinBtn.classList.add('pin-btn');
     const isPinned = callbacks.todoIds.includes(normalized.id);
-    pinBtn.dataset.tooltip = isPinned ? 'Unpin from Todo' : 'Pin to Todo';
-    if (isPinned) pinBtn.classList.add('is-active');
+    let pinBtn = null;
+    if (!isCollectionSyncMode) {
+        pinBtn = document.createElement('button');
+        pinBtn.type = 'button';
+        pinBtn.classList.add('pin-btn');
+        pinBtn.dataset.tooltip = isPinned ? 'Unpin from Todo' : 'Pin to Todo';
+        if (isPinned) pinBtn.classList.add('is-active');
 
-    const pinSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-    pinSvg.setAttribute('viewBox', '0 0 384 512');
-    pinSvg.setAttribute('aria-hidden', 'true');
-    pinSvg.classList.add('pin-btn-icon');
-    const pinPath = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-    pinPath.setAttribute('d', 'M32 32C32 14.3 46.3 0 64 0L320 0c17.7 0 32 14.3 32 32s-14.3 32-32 32l-29 0 0 160c0 17.1 6.8 33.5 19 45.7l44.3 44.3c14.1 14.1 21.4 33.1 20.3 52.8s-12.7 37.7-30.8 45.6c-10.3 4.5-21.5 6.8-32.8 6.8l-85 0 0 128c0 17.7-14.3 32-32 32s-32-14.3-32-32l0-128-85 0c-11.3 0-22.5-2.3-32.8-6.8c-18.1-7.9-29.7-25.9-30.8-45.6s6.3-38.7 20.3-52.8L93 271.7c12.2-12.2 19-28.6 19-45.7l0-160-29 0c-17.7 0-32-14.3-32-32z');
-    pinSvg.appendChild(pinPath);
-    pinBtn.appendChild(pinSvg);
+        const pinSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+        pinSvg.setAttribute('viewBox', '0 0 384 512');
+        pinSvg.setAttribute('aria-hidden', 'true');
+        pinSvg.classList.add('pin-btn-icon');
+        const pinPath = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+        pinPath.setAttribute('d', 'M32 32C32 14.3 46.3 0 64 0L320 0c17.7 0 32 14.3 32 32s-14.3 32-32 32l-29 0 0 160c0 17.1 6.8 33.5 19 45.7l44.3 44.3c14.1 14.1 21.4 33.1 20.3 52.8s-12.7 37.7-30.8 45.6c-10.3 4.5-21.5 6.8-32.8 6.8l-85 0 0 128c0 17.7-14.3 32-32 32s-32-14.3-32-32l0-128-85 0c-11.3 0-22.5-2.3-32.8-6.8c-18.1-7.9-29.7-25.9-30.8-45.6s6.3-38.7 20.3-52.8L93 271.7c12.2-12.2 19-28.6 19-45.7l0-160-29 0c-17.7 0-32-14.3-32-32z');
+        pinSvg.appendChild(pinPath);
+        pinBtn.appendChild(pinSvg);
 
-    if (isTodoTab) {
-        pinBtn.classList.add('is-todo-tab');
-        pinBtn.dataset.tooltip = 'Remove from Todo';
+        if (isTodoTab) {
+            pinBtn.classList.add('is-todo-tab');
+            pinBtn.dataset.tooltip = 'Remove from Todo';
+        }
+
+        pinBtn.dataset.action = 'toggle-pin';
+        pinBtn.dataset.itemId = normalized.id;
     }
-
-    pinBtn.dataset.action = 'toggle-pin';
-    pinBtn.dataset.itemId = normalized.id;
 
     let doneBtn = null;
     // Only show done button for todo and completed tabs
-    if (isTodoTab || isCompletedTab) {
+    if (!isCollectionSyncMode && (isTodoTab || isCompletedTab)) {
         doneBtn = document.createElement('button');
         doneBtn.type = 'button';
         doneBtn.classList.add('done-btn');
@@ -729,7 +734,7 @@ export const buildListItem = (metadata, index, callbacks) => {
     const rightPane = document.createElement('div');
     rightPane.classList.add('list-right');
     rightPane.appendChild(timelineContainer);
-    if (!isDone) {
+    if (pinBtn && !isDone) {
         rightPane.appendChild(pinBtn);
     }
 

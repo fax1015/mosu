@@ -90,7 +90,9 @@ export const updateEmptyState = (listContainer, items) => {
     emptyState.classList.toggle('is-active', !hasItems);
 
     if (!hasItems) {
-        const viewMode = Store.viewMode;
+        const viewMode = (
+            Store.settings.collectionsImportEnabled && Store.viewMode === 'completed'
+        ) ? 'todo' : Store.viewMode;
         if (viewMode === 'all') {
             emptyState.textContent = 'No maps here~ You should add some!';
         } else if (viewMode === 'completed') {
@@ -518,12 +520,16 @@ export const renderFromState = (callbacks = {}) => {
         scheduleSave: () => { }
     };
 
+    const effectiveViewMode = (
+        effectiveCallbacks.settings?.collectionsImportEnabled && effectiveCallbacks.viewMode === 'completed'
+    ) ? 'todo' : effectiveCallbacks.viewMode;
+
     // Cache mapper names once per render pass for guest difficulty filtering
     const mapperName = effectiveCallbacks.getEffectiveMapperName ? effectiveCallbacks.getEffectiveMapperName() : '';
     _cachedMapperNeedles = (mapperName || '').split(',').map(m => m.trim().toLowerCase()).filter(Boolean);
 
     let itemsToRender = [];
-    if (effectiveCallbacks.viewMode === 'todo') {
+    if (effectiveViewMode === 'todo') {
         // Build a lookup map for O(1) access in todo/completed modes.
         const itemMap = new Map();
         for (const item of effectiveCallbacks.beatmapItems) {
@@ -547,7 +553,7 @@ export const renderFromState = (callbacks = {}) => {
                 itemsToRender.push(item);
             }
         }
-    } else if (effectiveCallbacks.viewMode === 'completed') {
+    } else if (effectiveViewMode === 'completed') {
         // Build a lookup map for O(1) access in todo/completed modes.
         const itemMap = new Map();
         for (const item of effectiveCallbacks.beatmapItems) {
@@ -583,7 +589,7 @@ export const renderFromState = (callbacks = {}) => {
     }
 
     listContainer.className = '';
-    listContainer.classList.add(`view-${effectiveCallbacks.viewMode}`);
+    listContainer.classList.add(`view-${effectiveViewMode}`);
 
     // Detect if a filter/search is active — suppress pop-in animation in this case
     const srFilter = effectiveCallbacks.srFilter;
@@ -591,11 +597,12 @@ export const renderFromState = (callbacks = {}) => {
         (srFilter && (srFilter.min > 0 || srFilter.max < 10));
 
     // Use grouped view only on 'all' tab when the setting is enabled
-    if (effectiveCallbacks.settings.groupMapsBySong && effectiveCallbacks.viewMode === 'all') {
+    if (effectiveCallbacks.settings.groupMapsBySong && effectiveViewMode === 'all') {
         listContainer.classList.add('view-grouped');
         const groups = groupItemsBySong(itemsToRender);
         renderGroupedView(listContainer, groups, {
             ...effectiveCallbacks,
+            viewMode: effectiveViewMode,
             isFiltering,
             updateEmptyState: (container) => updateEmptyState(container, itemsToRender),
             buildListItem
@@ -605,6 +612,7 @@ export const renderFromState = (callbacks = {}) => {
         setItemsToRender(itemsToRender);
         renderVirtualList(listContainer, itemsToRender, {
             ...effectiveCallbacks,
+            viewMode: effectiveViewMode,
             isFiltering,
             updateEmptyState: (container) => updateEmptyState(container, itemsToRender)
         });
@@ -614,7 +622,7 @@ export const renderFromState = (callbacks = {}) => {
     _beatmapItems = effectiveCallbacks.beatmapItems;
     _todoIds = effectiveCallbacks.todoIds;
     _doneIds = effectiveCallbacks.doneIds;
-    _viewMode = effectiveCallbacks.viewMode;
+    _viewMode = effectiveViewMode;
     _sortState = effectiveCallbacks.sortState;
     _searchQuery = effectiveCallbacks.searchQuery;
     _srFilter = effectiveCallbacks.srFilter;

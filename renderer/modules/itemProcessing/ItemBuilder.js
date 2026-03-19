@@ -50,6 +50,24 @@ const buildLazerCoverUrl = (beatmapSetID) => {
     return id ? `https://assets.ppy.sh/beatmaps/${id}/covers/cover.jpg` : '';
 };
 
+const deriveBeatmapHash = (filePath, incomingHash, isLazerClient, existing) => {
+    const normalizedIncoming = String(incomingHash || '').trim().toLowerCase();
+    if (normalizedIncoming) {
+        return normalizedIncoming;
+    }
+
+    const normalizedExisting = String(existing?.beatmapHash || '').trim().toLowerCase();
+    if (normalizedExisting) {
+        return normalizedExisting;
+    }
+
+    if (!isLazerClient) {
+        return '';
+    }
+
+    return String(filePath || '').replace(/\\/g, '/').split('/').pop()?.trim().toLowerCase() || '';
+};
+
 // ============================================
 // Item Building from Content
 // ============================================
@@ -62,7 +80,7 @@ const buildLazerCoverUrl = (beatmapSetID) => {
  * @param {Object|null} existing - Existing item data (for updates)
  * @returns {Promise<Object>} Built item object
  */
-export async function buildItemFromContent(filePath, content, stat, existing) {
+export async function buildItemFromContent(filePath, content, stat, existing, beatmapHash = '') {
     const metadata = parseMetadata(content);
     const { hitStarts, hitEnds } = parseHitObjects(content);
     const breakPeriods = parseBreakPeriods(content);
@@ -75,7 +93,8 @@ export async function buildItemFromContent(filePath, content, stat, existing) {
         breakPeriods,
         bookmarks,
         filePath,
-        stat
+        stat,
+        beatmapHash
     }, existing);
 }
 
@@ -95,7 +114,7 @@ export async function buildItemFromContent(filePath, content, stat, existing) {
  * @returns {Object} Processed item
  */
 export function processWorkerResult(file, existing) {
-    const { metadata, hitStarts, hitEnds, breakPeriods, bookmarks, filePath, stat } = file || {};
+    const { metadata, hitStarts, hitEnds, breakPeriods, bookmarks, filePath, stat, beatmapHash } = file || {};
     const isLazerClient = getActiveOsuClient() === 'lazer';
 
     let coverUrl = '';
@@ -163,6 +182,7 @@ export function processWorkerResult(file, existing) {
         dateModified: stat?.mtimeMs ?? 0,
         id: existing?.id ?? createItemId(filePath),
         filePath,
+        beatmapHash: deriveBeatmapHash(filePath, beatmapHash, isLazerClient, existing),
         starRating: isValidStarRating(metadata?.starRating) ? metadata.starRating : null,
     };
 
@@ -232,6 +252,11 @@ export function buildItemFromCache(cached, settingsObj = settings) {
         audio: cached.audio || '',
         audioFileName: cached.audioFileName || '',
         background: cached.background || '',
+        beatmapHash: cached.beatmapHash || (
+            isLazerClient
+                ? String(cached.filePath || '').replace(/\\/g, '/').split('/').pop()?.toLowerCase() || ''
+                : ''
+        ),
         durationMs: (typeof cached.durationMs === 'number') ? cached.durationMs : null,
         progressPending: Boolean(cached.progressPending) || (Boolean(cached.audio) && typeof cached.durationMs !== 'number'),
         previewTime: cached.previewTime ?? -1,

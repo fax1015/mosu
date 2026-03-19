@@ -839,6 +839,18 @@ body.is-dragging-any * {
     outline: none;
 }
 
+.collection-picker-select {
+    width: 100%;
+    margin-top: 0.5rem;
+}
+
+.settings-inline-warning {
+    margin-top: 0.45rem;
+    color: var(--accent-secondary);
+    font-size: var(--font-tag);
+    font-weight: 600;
+}
+
 .sort-dropdown {
     position: relative;
     display: flex;
@@ -859,6 +871,11 @@ body.is-dragging-any * {
     transition: var(--transition);
     flex-shrink: 0;
     white-space: nowrap;
+}
+
+.sort-trigger:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
 }
 
 .sr-range-group {
@@ -1065,6 +1082,46 @@ body.is-dragging-any * {
 
 .settings-mode-dropdown .sort-menu {
     min-width: 140px;
+}
+
+.collections-target-dropdown {
+    width: 100%;
+}
+
+.collections-target-dropdown .sort-trigger {
+    width: 100%;
+    justify-content: space-between;
+}
+
+.collections-target-dropdown .sort-label {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.collections-target-dropdown .sort-menu {
+    width: 100%;
+    min-width: 100%;
+    max-height: 240px;
+    overflow-y: auto;
+}
+
+#collectionPickerDialog {
+    overflow: visible;
+}
+
+#collectionPickerDialog .prompt-dialog-form {
+    overflow: visible;
+}
+
+#collectionPickerDialog .sort-menu {
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+}
+
+#collectionPickerDialog .sort-menu::-webkit-scrollbar {
+    width: 0;
+    height: 0;
 }
 
 .control-select:focus,

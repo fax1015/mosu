@@ -63,6 +63,12 @@
     readAudio: (filePath, fileNameHint) => invoke('read_audio_file', { filePath, fileNameHint }),
     readOsuFile: (filePath) => invoke('read_osu_file', { filePath }),
     statFile: (filePath) => invoke('stat_file', { filePath }),
+    parseStableCollections: (path) => invoke('parse_stable_collections', { path }),
+    addToStableCollection: (collectionDbPath, collectionName, beatmapHash) =>
+      invoke('add_to_stable_collection', { collectionDbPath, collectionName, beatmapHash }),
+    getLazerCollections: (dataRoot) => invoke('get_lazer_collections', { dataRoot }),
+    addToLazerCollection: (dataRoot, collectionName, beatmapHash) =>
+      invoke('add_to_lazer_collection', { dataRoot, collectionName, beatmapHash }),
     prepareLazerMapSession: (filePath, dataRoot) => invoke('prepare_lazer_map_session', { filePath, dataRoot }),
     commitLazerMapSession: (sessionDir) => invoke('commit_lazer_map_session', { sessionDir }),
     scanDirectoryOsuFiles: (dirPath, mapperName, knownFiles, clientType) =>

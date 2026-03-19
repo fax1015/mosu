@@ -152,6 +152,7 @@ export function saveToStorage({ showNotification } = {}) {
             starRating: isValidStarRating(item.starRating) ? item.starRating : null,
             audio: item.audio || '',
             audioFileName: item.audioFileName || '',
+            beatmapHash: item.beatmapHash || '',
             deadline: (typeof item.deadline === 'number' || item.deadline === null) ? item.deadline : null,
             targetStarRating: (typeof item.targetStarRating === 'number' || item.targetStarRating === null) ? item.targetStarRating : null,
             durationMs: (typeof item.durationMs === 'number') ? item.durationMs : null,
@@ -238,6 +239,11 @@ function buildItemFromCache(cached) {
         ...cached,
         audio: cached.audio || '',
         coverPath: isLazerClient ? '' : (cached.coverPath || ''),
+        beatmapHash: cached.beatmapHash || (
+            isLazerClient
+                ? String(cached?.filePath || '').replace(/\\/g, '/').split('/').pop()?.toLowerCase() || ''
+                : ''
+        ),
         durationMs: (typeof cached.durationMs === 'number') ? cached.durationMs : null,
         coverUrl: isLazerClient && beatmapSetIdNumber
             ? `https://assets.ppy.sh/beatmaps/${beatmapSetIdNumber}/covers/cover.jpg`
